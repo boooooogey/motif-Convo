@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 import argparse
 import numpy as np
 import os
@@ -29,6 +30,7 @@ def readbed(filename, up):
     return np.array(chrs), np.array(start, dtype = int), np.array(end, dtype = int)
 
 def stringstats(string):
+    string=string.upper()
     tmp = np.array(list(string))
     gc_count = np.sum(np.logical_or(tmp == 'C', tmp == 'G'))/len(tmp)
     gc_pattern = string.count("GC")/(len(tmp)-1)
@@ -140,7 +142,7 @@ def write_output(filename, mat, names):
         for i in range(mat.shape[0]):
             for j in range(mat.shape[1]):
                 file.write("{:.4f}".format(mat[i,j]))
-                if j != mat.shape[1]:
+                if j != mat.shape[1]-1:
                     file.write("\t")
             file.write("\n")
 
