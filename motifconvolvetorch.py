@@ -42,9 +42,9 @@ def returnonehot(string):
     string = string.upper()
     lookup = {'A':0, 'C':1, 'G':2, 'T':3}
     tmp = np.array(list(string))
-    irow = np.where(tmp != 'N')[0]
-    out = np.zeros((len(tmp),4))
-    icol = np.array([lookup[i] for i in tmp[irow]])
+    icol = np.where(tmp != 'N')[0]
+    out = np.zeros((4,len(tmp)))
+    irow = np.array([lookup[i] for i in tmp[icol]])
     if len(icol)>0:
         out[irow,icol] = 1
     return np.asarray(out)
@@ -94,20 +94,19 @@ class MEME():
         self.background = np.array(data[3].split('\n')[1].split(' ')[1::2],dtype=float)
 
         out_channels = self.nmotifs * 2
-        in_channels = 1
 
         lens = np.array([len(i.split('\n')[2:]) for i in data[offset_metadata:]])
         height = np.max(lens)
         maximumpadding = height - np.min(lens)
         width = len(self.alphabet)
-        out = np.zeros((out_channels, in_channels, height, width))
+        out = np.zeros((out_channels, width, height))
 
         data = data[offset_metadata:]
         for k, i in enumerate(data):
             tmp = i.split('\n')
             self.names.append(tmp[0].split()[-1])
             self.headers.append('\n'.join(tmp[:2]))
-            kernel = np.array([j.split() for j in tmp[2:]],dtype=float)
+            kernel = np.array([j.split() for j in tmp[2:]],dtype=float).T
             if (transform == "constant"):
                 bg=np.repeat(0.25,width).reshape(1,width)
             if (transform == "local"):
@@ -115,8 +114,8 @@ class MEME():
             if (transform != "none"):
                 offset=np.min(kernel[kernel>0])
                 kernel=np.log((kernel+offset)/bg)
-            out[2*k  , 0, :kernel.shape[0], :] = kernel
-            out[2*k+1, 0, :kernel.shape[0], :] = kernel[::-1, ::-1]
+            out[2*k  , :, :kernel.shape[1]] = kernel
+            out[2*k+1, :, :kernel.shape[1]] = kernel[::-1, ::-1]
         return torch.from_numpy(out)
 
 class SegmentData:
@@ -141,10 +140,9 @@ class SegmentData:
         i1, i2 = i*self.batchsize, (i+1)*self.batchsize
         if i2 >= self.n: i2 = self.n
         batchsize = int(i2 - i1)
-        nchannel = 1
         height = np.max(self.ends[i1:i2] - self.starts[i1:i2]) + self.padding
         width = 4
-        batch = np.zeros((batchsize, nchannel, height, width)) 
+        batch = np.zeros((batchsize, width, height)) 
         stats = np.empty((batchsize, 4))
         for i, c, s, e in zip(range(i2-i1), self.chrs[i1:i2], self.starts[i1:i2], self.ends[i1:i2]):
             self.out.write(c+"\t"+str(s)+"\t"+str(e)+"\n")
@@ -153,7 +151,7 @@ class SegmentData:
             else:
                 seg = "N"*(self.padding*2)
             stats[i] = stringstats(seg)
-            batch[i, :, :(e-s), :] = returnonehot(seg)
+            batch[i, :, :(e-s)] = returnonehot(seg)
         return torch.from_numpy(batch), stats
 
     def __del__(self):
@@ -174,7 +172,7 @@ def main():
     args = parser.parse_args()
 
     motif = MEME()
-    print(f"Reading the motifs from {args.meme}")
+    print(f"Reading motifs from {args.meme}")
     kernels = motif.parse(args.meme, args.transform)
     print(f"Reading peaks from {args.bed}")
     print(f"Genome: {args.genome}")
@@ -189,11 +187,11 @@ def main():
         i1, i2 = i*args.batch, (i+1)*args.batch
         if i2 >= segments.n: i2 = segments.n
         mat, out[i1:i2, motif.nmotifs:] = segments[i]
-        tmp = F.conv2d(mat, kernels)
+        tmp = F.conv1d(mat, kernels)
         if args.mode == "average":
-            tmp = F.avg_pool2d(tmp, (tmp.shape[2], 1)).numpy()
+            tmp = F.avg_pool1d(tmp, tmp.shape[2]).numpy()
         if args.mode == "max":
-            tmp = F.max_pool2d(tmp, (tmp.shape[2], 1)).numpy()
+            tmp = F.max_pool1d(tmp, tmp.shape[2]).numpy()
         out[i1:i2, :motif.nmotifs] = np.max(tmp.reshape(tmp.shape[0],-1,2), axis=2)
     print(f"Writing the results to {args.out}")
     write_output(args.out, out, motif.names)
