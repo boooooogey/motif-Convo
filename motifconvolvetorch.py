@@ -57,7 +57,7 @@ def write_output(filename, mat, names):
         file.write("GC_ratio\t")
         file.write("GC_pattern\t")
         file.write("CG_pattern\t")
-        file.write("Repressed_ratio\n")
+        file.write("Masked_ratio\n")
         for i in range(mat.shape[0]):
             for j in range(mat.shape[1]):
                 file.write("{:.4f}".format(mat[i,j]))
