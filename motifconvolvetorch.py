@@ -6,7 +6,6 @@ from pysam import FastaFile
 import torch
 from torch.nn import functional as F
 from torch.utils.data import Dataset
-from IPython import embed
 
 torch.backends.cudnn.deterministic = True
 
