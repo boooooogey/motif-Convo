@@ -2,14 +2,14 @@
 import argparse
 from torch.nn import functional as F
 import pandas as pd
-from util import MEME, SegmentData
+from util import MEME, SegmentData, kmers
 import torch
 import numpy as np
 
 torch.backends.cudnn.deterministic = True
 
 def write_output(filename, mat, names):
-    pd.DataFrame(mat, columns = names + ["GC_ratio", "GC_pattern", "CG_pattern", "Masked_ratio"]).to_csv(filename, sep = "\t", float_format = '%.3f', index = False)
+    pd.DataFrame(mat, columns = names + ["GC_ratio", "Masked_ratio"] + [i+"_pattern" for i in kmers()]).to_csv(filename, sep = "\t", float_format = '%.3f', index = False)
 
 def main():
     parser = argparse.ArgumentParser()
@@ -32,7 +32,7 @@ def main():
     print(f"Total window: {args.window+args.up}")
 
     segments = SegmentData(args.bed, args.batch, args.genome, int(args.window+args.up/2), args.up)
-    out = np.empty((segments.n, motif.nmotifs+4))
+    out = np.empty((segments.n, motif.nmotifs+segments.additional))
     print(f"Batch size: {args.batch}")
     print("Calculating convolutions")
     for i in range(len(segments)):

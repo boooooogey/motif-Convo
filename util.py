@@ -3,6 +3,7 @@ import torch
 import pandas as pd
 from pysam import FastaFile
 import time
+import itertools
 
 def number_of_headers(filename):
     header=0
@@ -14,6 +15,18 @@ def number_of_headers(filename):
             else:
                 break
     return header
+
+def kmers_count(seq, k=2):
+    lookup = {"".join(i):0 for i in itertools.product(["A","C","G","T"], repeat=k)}
+    mers = [seq[i:i+2] for i in range(len(seq)-k+1)]
+    for i in mers:
+        lookup[i] += 1
+    for i in lookup:
+        lookup[i] /= (len(seq)-k+1)
+    return list(lookup.values())
+
+def kmers(k=2):
+    return ["".join(i) for i in itertools.product(["A","C","G","T"], repeat=k)]
 
 def readvcf(filename):
     nh = number_of_headers(filename)
@@ -163,9 +176,10 @@ def stringstats(string):
     string = string.upper()
     tmp = np.array(list(string))
     gccount = np.sum(np.logical_or(tmp == 'C', tmp == 'G'))/len(tmp)
-    gcpattern = string.count("GC")/(len(tmp)-1)
-    cgpattern = string.count("CG")/(len(tmp)-1)
-    return np.array([gccount, gcpattern, cgpattern, lowercaseratio])
+    #gcpattern = string.count("GC")/(len(tmp)-1)
+    #cgpattern = string.count("CG")/(len(tmp)-1)
+    patterns = kmers_count(string)
+    return np.array([gccount, lowercaseratio, *patterns], dtype=np.float32)
 
 class SegmentData:
     def __init__(self, bed, batchsize, genome, windowsize, up):
@@ -179,6 +193,7 @@ class SegmentData:
         self.padding = windowsize
         refs = self.seqs.references
         lengths = self.seqs.lengths
+        self.additional = 4 * 4 + 2
         self.limits = {refs[i]: lengths[i] for i in range(len(refs))}
         self.out = open("coordinatesUsed.bed", "w")
 
@@ -192,7 +207,7 @@ class SegmentData:
         height = np.max(self.ends[i1:i2] - self.starts[i1:i2]) + self.padding
         width = 4
         batch = np.zeros((batchsize, width, height), dtype=np.float32) 
-        stats = np.empty((batchsize, 4), dtype=np.float32)
+        stats = np.empty((batchsize, self.additional), dtype=np.float32)
         for i, c, s, e in zip(range(i2-i1), self.chrs[i1:i2], self.starts[i1:i2], self.ends[i1:i2]):
             self.out.write(c+"\t"+str(s)+"\t"+str(e)+"\n")
             if s>0 and e<self.limits[c]:
