@@ -4,6 +4,8 @@ import pandas as pd
 from pysam import FastaFile
 import time
 import itertools
+import xml.etree.ElementTree as ET
+import os
 
 def number_of_headers(filename):
     header=0
@@ -54,18 +56,38 @@ def readbed(filename, up):
         end = end + (strand == "-") * up #[end[i]+up if strand[i]=="-" else end[i] for i in range(len(start))]
     return chrs, start, end
 
-def returnonehot(string):
+def returnonehot(string, dinucleotide=False):
     string = string.upper()
-    lookup = {'A':0, 'C':1, 'G':2, 'T':3}
     tmp = np.array(list(string))
-    icol = np.where(tmp != 'N')[0]
-    out = np.zeros((4,len(tmp)), dtype = np.float32)
-    irow = np.array([lookup[i] for i in tmp[icol]])
+
+    if dinucleotide:
+        lookup = {"".join(i):n for n,i in enumerate(itertools.product(["A","C","G","T"], repeat=2))}
+        icol = np.where(tmp == 'N')[0]
+        icol = np.unique(icol // 2)
+        icol = np.where(np.logical_not(np.isin(np.arange(len(tmp)//2), icol)))[0]
+        tmp = np.array([tmp[2*i] + tmp[2*i+1] for i in range(len(tmp)//2)])
+        irow = np.array([lookup[i] for i in tmp[icol]])
+    else:
+        lookup = {'A':0, 'C':1, 'G':2, 'T':3}
+        icol = np.where(tmp != 'N')[0]
+        irow = np.array([lookup[i] for i in tmp[icol]])
+
+    out = np.zeros((len(lookup),len(tmp)), dtype = np.float32)
 
     if len(icol)>0:
         out[irow,icol] = 1
 
     return out
+
+def read_TFFM(file):
+    tree = ET.parse(file)
+    root = tree.getroot()
+    data = []
+    for state in root[0].iterfind("state"):
+        discrete = state[0]
+        if "order" in discrete.attrib:
+            data.append(discrete.text.split(","))
+    return np.array(data, dtype=float)
 
 class MEME():
     def __init__(self):
@@ -112,6 +134,30 @@ class MEME():
             out[2*k+1, :, :kernel.shape[0]] = kernel[::-1, ::-1].T
             mask[2*k  , :, :kernel.shape[0]] = 1
             mask[2*k+1, :, :kernel.shape[0]] = 1
+        return torch.from_numpy(out), mask
+
+class TFFM():
+    def __init__(self):
+        self.names = []
+        self.nmotifs = 0
+
+    def parse(self, directory):
+        self.names = os.listdir(directory)
+        self.nmotifs = len(self.names)
+        in_channels = 16
+        out_channels = self.nmotifs
+        data = []
+        height = 0
+        for i in self.names:
+            tffm = read_TFFM(os.path.join(directory, i))
+            data.append(tffm)
+            if tffm.shape[0] > height:
+                height = tffm.shape[0]
+        out = np.zeros((out_channels, in_channels, height), dtype=np.float32)
+        mask = torch.zeros((out_channels, 1 , height), dtype=torch.uint8)
+        for n, tffm in enumerate(data):
+            out[n, :, :tffm.shape[0]] = tffm.T
+            mask[n, :, :tffm.shape[0]] = 1
         return torch.from_numpy(out), mask
 
 class vcfData:
@@ -182,7 +228,7 @@ def stringstats(string):
     return np.array([gccount, lowercaseratio, *patterns], dtype=np.float32)
 
 class SegmentData:
-    def __init__(self, bed, batchsize, genome, windowsize, up):
+    def __init__(self, bed, batchsize, genome, windowsize, up, dinucleotide=False):
         self.chrs, self.starts, self.ends = readbed(bed, up)
         self.midpoints = np.asarray(np.ceil((self.starts + self.ends)/2),dtype=int)
         self.starts = self.midpoints - windowsize
@@ -196,6 +242,7 @@ class SegmentData:
         self.additional = 4 * 4 + 2
         self.limits = {refs[i]: lengths[i] for i in range(len(refs))}
         self.out = open("coordinatesUsed.bed", "w")
+        self.dinucleotide = dinucleotide
 
     def __len__(self):
         return int(np.ceil(self.n / self.batchsize))
@@ -204,8 +251,12 @@ class SegmentData:
         i1, i2 = i*self.batchsize, (i+1)*self.batchsize
         if i2 >= self.n: i2 = self.n
         batchsize = int(i2 - i1)
-        height = np.max(self.ends[i1:i2] - self.starts[i1:i2]) + self.padding
-        width = 4
+        if self.dinucleotide:
+            height = np.max(self.ends[i1:i2] - self.starts[i1:i2])//2# + self.padding
+            width = 16
+        else:
+            height = np.max(self.ends[i1:i2] - self.starts[i1:i2])# + self.padding
+            width = 4
         batch = np.zeros((batchsize, width, height), dtype=np.float32) 
         stats = np.empty((batchsize, self.additional), dtype=np.float32)
         for i, c, s, e in zip(range(i2-i1), self.chrs[i1:i2], self.starts[i1:i2], self.ends[i1:i2]):
@@ -215,7 +266,10 @@ class SegmentData:
             else:
                 seg = "N"*(self.padding*2)
             stats[i] = stringstats(seg)
-            batch[i, :, :(e-s)] = returnonehot(seg)
+            if self.dinucleotide:
+                batch[i, :, :(e-s)//2] = returnonehot(seg, dinucleotide=True)
+            else:
+                batch[i, :, :(e-s)] = returnonehot(seg)
         return torch.from_numpy(batch), stats
 
     def __del__(self):
