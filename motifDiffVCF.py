@@ -38,8 +38,6 @@ def main():
 
 
     segments = vcfData(args.vcf, args.batch, args.genome, kernels.shape[2])
-    segment_mask = segments.return_mask()
-    motif_mask = F.conv1d(segment_mask, kernel_mask)
     outRef = np.empty((segments.n, motif.nmotifs), dtype=np.float32)
     outAlt = np.empty((segments.n, motif.nmotifs), dtype=np.float32)
     print(f"Batch size: {args.batch}")
@@ -48,12 +46,15 @@ def main():
         print(f"Batch {i+1}:")
         i1, i2 = i*args.batch, (i+1)*args.batch
         if i2 >= segments.n: i2 = segments.n
-        matref, matalt = segments[i]
+        matref, maskref, matalt, maskalt = segments[i]
         tmp = F.conv1d(matref, kernels)
-        tmp = einops.einsum(tmp, motif_mask, "batch motif length, motif length -> batch motif length")
+        motif_mask = F.conv1d(maskref, kernel_mask)
+        tmp = einops.einsum(tmp, motif_mask, "batch motif length, batch motif length -> batch motif length")
         tmp = F.max_pool1d(tmp.view(tmp.shape[0], tmp.shape[1]//2, tmp.shape[2] * 2), tmp.shape[2] * 2).numpy()
         outRef[i1:i2, :motif.nmotifs] = tmp[:, :, 0] 
         tmp = F.conv1d(matalt, kernels)
+        motif_mask = F.conv1d(maskalt, kernel_mask)
+        tmp = einops.einsum(tmp, motif_mask, "batch motif length, batch motif length -> batch motif length")
         tmp = F.max_pool1d(tmp.view(tmp.shape[0], tmp.shape[1]//2, tmp.shape[2] * 2), tmp.shape[2] * 2).numpy()
         outAlt[i1:i2, :motif.nmotifs] = tmp[:, :, 0] 
 

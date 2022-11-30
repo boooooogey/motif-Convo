@@ -63,9 +63,11 @@ def returnonehot(string, dinucleotide=False):
     if dinucleotide:
         lookup = {"".join(i):n for n,i in enumerate(itertools.product(["A","C","G","T"], repeat=2))}
         icol = np.where(tmp == 'N')[0]
-        icol = np.unique(icol // 2)
-        icol = np.where(np.logical_not(np.isin(np.arange(len(tmp)//2), icol)))[0]
-        tmp = np.array([tmp[2*i] + tmp[2*i+1] for i in range(len(tmp)//2)])
+        #icol = np.unique(icol // 2)
+        #icol = np.where(np.logical_not(np.isin(np.arange(len(tmp)//2), icol)))[0]
+        icol = np.unique(np.clip(np.concatenate([icol, icol-1]), 0, len(tmp)-2))
+        icol = np.where(np.logical_not(np.isin(np.arange(len(tmp)-1), icol)))[0]
+        tmp = np.array([tmp[i] + tmp[i+1] for i in range(len(tmp)-1)])
         irow = np.array([lookup[i] for i in tmp[icol]])
     else:
         lookup = {'A':0, 'C':1, 'G':2, 'T':3}
@@ -165,11 +167,23 @@ class vcfData:
         data = readvcf(vcf)
         self.headers = data.columns.to_list()
         
-        self.chrs = data.iloc[:,0].to_numpy()
-        self.starts = data.iloc[:,1].to_numpy() - int(windowsize)
-        self.ends = data.iloc[:,1].to_numpy() + int(windowsize) - 1
         self.ref = data.iloc[:,3].to_numpy()
         self.alt = data.iloc[:,4].to_numpy()
+
+        f = np.vectorize(len)
+
+        self.reflength = f(self.ref)
+        self.altlength = f(self.alt)
+
+        self.chrs = data.iloc[:,0].to_numpy()
+
+        self.refstarts = data.iloc[:,1].to_numpy() - int(windowsize)
+        self.refends = data.iloc[:,1].to_numpy() + self.reflength - 1 + int(windowsize) - 1
+
+        self.altstarts = data.iloc[:,1].to_numpy() - int(windowsize)
+        self.altends = data.iloc[:,1].to_numpy() + self.altlength - 1 + int(windowsize) - 1
+
+        self.pos = data.iloc[:,1].to_numpy()
 
         self.batchsize = batchsize
         self.n = data.shape[0] 
@@ -188,28 +202,27 @@ class vcfData:
         i1, i2 = i*self.batchsize, (i+1)*self.batchsize
         if i2 >= self.n: i2 = self.n
         batchsize = int(i2 - i1)
-        height = self.windowsize*2-1 #np.max(self.ends[i1:i2] - self.starts[i1:i2])# + self.padding
+        targetlength = max(np.max(self.reflength[i1:i2]), np.max(self.altlength[i1:i2]))
+        height = (self.windowsize-1)*2 + targetlength #np.max(self.ends[i1:i2] - self.starts[i1:i2])# + self.padding
         width = 4
         batch = np.zeros((batchsize, width, height), dtype=np.float32) 
+        mask = torch.zeros((batchsize, 1, height), dtype=torch.uint8)
         altbatch = np.zeros((batchsize, width, height), dtype=np.float32) 
+        altmask = torch.zeros((batchsize, 1, height), dtype=torch.uint8)
         stats = np.empty((batchsize, 4))
-        for i, c, s, e, r, a in zip(range(i2-i1), self.chrs[i1:i2], self.starts[i1:i2], self.ends[i1:i2], self.ref[i1:i2], self.alt[i1:i2]):
-            if s>0 and e<self.limits[c]:
-                seg = self.seqs.fetch(c, s, e)
+        for i, c, refs, refe, alts, alte, r, a, lenr, lena in zip(range(i2-i1), self.chrs[i1:i2], self.refstarts[i1:i2], self.refends[i1:i2], self.altstarts[i1:i2], self.altends[i1:i2], self.ref[i1:i2], self.alt[i1:i2], self.reflength[i1:i2], self.altlength[i1:i2]):
+            if refs>0 and refe<self.limits[c]:
+                seg = self.seqs.fetch(c, refs, refe)
                 seg=seg.upper()
                 #print(f"Sequence: {seg[:self.windowsize-1]} {seg[self.windowsize-1]} {seg[self.windowsize:]}")
                 #print(f"a: ({a}, {self.lookup[a]}), r: ({r}, {self.lookup[r]}), Target: {seg[self.windowsize-1]}")
-                assert(seg[self.windowsize-1]==r or len(a)!=1 or len(r)!=1)
-                batch[i, :, :height] = returnonehot(seg)
-                altbatch[i, :, :height] = batch[i, :, :] 
-                altbatch[i, self.lookup[r], self.windowsize-1] = 0
-                altbatch[i, self.lookup[a], self.windowsize-1] = 1
-        return torch.from_numpy(batch), torch.from_numpy(altbatch) #torch.from_numpy(batch)
-
-    def return_mask(self):
-        a = torch.zeros((1,self.windowsize*2-1), dtype=torch.uint8)
-        a[:, self.windowsize-1] = 1
-        return a
+                #assert(seg[self.windowsize-1]==r or len(a)!=1 or len(r)!=1)
+                assert(seg[self.windowsize-1:-(self.windowsize-1)]==r)
+                batch[i, :, :(refe-refs)] = returnonehot(seg)
+                mask[i, :, (self.windowsize-1):(refe-refs-self.windowsize+1)] = 1
+                altbatch[i, :, :(alte-alts)] = returnonehot(seg[:self.windowsize-1] + a + seg[-(self.windowsize-1):])
+                altmask[i, :, (self.windowsize-1):(alte-alts-self.windowsize+1)] = 1
+        return torch.from_numpy(batch), mask, torch.from_numpy(altbatch), altmask #torch.from_numpy(batch)
 
     def __del__(self):
         self.out.close()
@@ -252,7 +265,7 @@ class SegmentData:
         if i2 >= self.n: i2 = self.n
         batchsize = int(i2 - i1)
         if self.dinucleotide:
-            height = np.max(self.ends[i1:i2] - self.starts[i1:i2])//2# + self.padding
+            height = np.max(self.ends[i1:i2] - self.starts[i1:i2])-1# + self.padding
             width = 16
         else:
             height = np.max(self.ends[i1:i2] - self.starts[i1:i2])# + self.padding
@@ -267,7 +280,7 @@ class SegmentData:
                 seg = "N"*(self.padding*2)
             stats[i] = stringstats(seg)
             if self.dinucleotide:
-                batch[i, :, :(e-s)//2] = returnonehot(seg, dinucleotide=True)
+                batch[i, :, :(e-s)-1] = returnonehot(seg, dinucleotide=True)
             else:
                 batch[i, :, :(e-s)] = returnonehot(seg)
         return torch.from_numpy(batch), stats
