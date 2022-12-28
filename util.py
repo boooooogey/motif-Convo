@@ -6,6 +6,9 @@ import time
 import itertools
 import xml.etree.ElementTree as ET
 import os
+from scipy.optimize import curve_fit
+import regex as re
+from IPython import embed
 
 def number_of_headers(filename):
     header=0
@@ -22,7 +25,8 @@ def kmers_count(seq, k=2):
     lookup = {"".join(i):0 for i in itertools.product(["A","C","G","T"], repeat=k)}
     mers = [seq[i:i+2] for i in range(len(seq)-k+1)]
     for i in mers:
-        lookup[i] += 1
+        if i in lookup:
+            lookup[i] += 1
     for i in lookup:
         lookup[i] /= (len(seq)-k+1)
     return list(lookup.values())
@@ -30,14 +34,89 @@ def kmers_count(seq, k=2):
 def kmers(k=2):
     return ["".join(i) for i in itertools.product(["A","C","G","T"], repeat=k)]
 
+def logit(x, a, b):
+    return 1/(1 + np.exp(-a * x - b))
+
+def init_dist(dmin, dmax, dp, weights, probs):
+    out = np.zeros(int(np.round((dmax-dmin)/dp)+1))
+    ii = np.array(np.round((weights-dmin)/dp), dtype=int)
+    for i in range(len(probs)):
+        out[ii[i]] = out[ii[i]] + probs[i]
+    return out
+
+def scoreDist(pwm, nucleotide_prob=None, gran=None, size=1000, diff=False):
+    if nucleotide_prob is None:
+        nucleotide_prob = np.ones(4)/4
+    if gran is None:
+        if size is None:
+            raise ValueError("provide either gran or size. Both missing.")
+        gran = (np.max(pwm) - np.min(pwm))/(size - 1)
+    pwm = np.round(pwm/gran)*gran
+    pwm_max, pwm_min = pwm.max(axis=1), pwm.min(axis=1)
+    distribution = init_dist(pwm_min[0], pwm_max[0], gran, pwm[0], nucleotide_prob)
+    for i in range(1, pwm.shape[0]):
+        kernel = init_dist(pwm_min[i], pwm_max[i], gran, pwm[i], nucleotide_prob)
+        distribution = np.convolve(distribution, kernel)
+    if diff:
+        distribution = np.convolve(distribution, distribution[::-1])
+        support_min = pwm_min.sum() - pwm_max.sum()
+    else:
+        support_min = pwm_min.sum()
+    ii = np.where(distribution > 0)[0]
+    support = support_min + (ii) * gran
+    return support, distribution[ii]
+
+def return_coef_for_normalization(pwms, nucleotide_prob=None, gran=None, size=1000, length_correction=1):
+    params = []
+    for i in range(0,pwms.shape[0],2):
+        pwm = pwms[i].numpy().T
+        pwm = pwm[pwm.sum(axis=1) != 0, :]
+        prob = pwm.sum(axis=0)/pwm.sum()
+        prob = np.ones(pwm.shape[1]) * 0.25
+        s, d = scoreDist(pwm, prob, gran, size)
+        param, _ = curve_fit(logit, s, np.power(np.cumsum(d), length_correction))
+        params.append(param)
+    return params
+
+def return_coef_for_normalization_diff(pwms, nucleotide_prob=None, gran=None, size=1000, length_correction=1):
+    params = []
+    for i in range(0,pwms.shape[0],2):
+        pwm = pwms[i].numpy().T
+        pwm = pwm[pwm.sum(axis=1) != 0, :]
+        #prob = pwm.sum(axis=0)/pwm.sum()
+        prob = np.sum(np.exp(pwm) / np.exp(pwm).sum(axis=1).reshape(-1,1), axis=0)/np.sum(np.exp(pwm) / np.exp(pwm).sum(axis=1).reshape(-1,1))
+        s, d = scoreDist(pwm, prob, gran, size, diff=True)
+        param, _ = curve_fit(logit, s, np.power(np.cumsum(d), length_correction))
+        params.append(param)
+    return params
+
+def normalize_mat(mat, params):
+    out = np.empty_like(mat)
+    assert mat.shape[1] == len(params)
+    for i in range(len(params)):
+        out[:,i] = logit(mat[:,i], *params[i])
+    return torch.from_numpy(out)
+
+#def readvcf(filename):
+#    nh = number_of_headers(filename)
+#    if nh > 1:
+#        data = pd.read_csv(filename, header=list(range(nh)), sep="\t")
+#        data.columns = pd.MultiIndex.from_tuples([tuple(i[1:] for i in data.columns[0])] +list(data.columns)[1:])
+#    elif nh == 1:
+#        data = pd.read_csv(filename, header=0, sep="\t")
+#        data.columns = [data.columns[0][1:]] + data.columns.to_list()[1:]
+#    else:
+#        data = pd.read_csv(filename, header=None, sep="\t")
+#    return data  
+
 def readvcf(filename):
     nh = number_of_headers(filename)
     if nh > 1:
-        data = pd.read_csv(filename, header=list(range(nh)), sep="\t")
-        data.columns = pd.MultiIndex.from_tuples([tuple(i[1:] for i in data.columns[0])] +list(data.columns)[1:])
+        data = pd.read_csv(filename, skiprows=nh, header=None, sep="\t")
+        #data.columns = pd.MultiIndex.from_tuples([tuple(i[1:] for i in data.columns[0])] +list(data.columns)[1:])
     elif nh == 1:
-        data = pd.read_csv(filename, header=0, sep="\t")
-        data.columns = [data.columns[0][1:]] + data.columns.to_list()[1:]
+        data = pd.read_csv(filename, skiprows=1, header=None, sep="\t")
+        #data.columns = [data.columns[0][1:]] + data.columns.to_list()[1:]
     else:
         data = pd.read_csv(filename, header=None, sep="\t")
     return data  
@@ -96,7 +175,7 @@ class MEME():
         self.version = 0
         self.alphabet = ""
         self.strands = ""
-        self.headers = []
+        #self.headers = []
         self.background = []
         self.names = []
         self.nmotifs = 0
@@ -104,28 +183,32 @@ class MEME():
     def parse(self, text, transform):
         with open(text,'r') as file:
             data = file.read()
-        data = data.split("\n\n")
-        data = data[:-1]
-        out_channels = (len(data) - 4) * 2
+        self.version = re.compile(r'MEME version ([\d+\.*]+)').match(data).group(1)
+        self.names = re.findall(r"MOTIF (.*)\n", data)
+        self.background = re.findall(r"Background letter frequencies.*\n(A .* C .* G .* T .*)\n", data)[0]
+        self.strands = re.findall(r"strands: (.*)\n", data)[0].strip()
+        self.alphabet = re.findall(r"ALPHABET=(.*)\n", data)[0].strip()
+        letter_probs = re.findall(r"(letter-probability.*\n([ \t]*\d+\.?\d*[ \t]+\d+\.?\d*[ \t]+\d+\.?\d*[ \t]+\d+\.?\d*[ \t]*\n)+)", data)
+        assert len(letter_probs) == len(self.names)
+        self.nmotifs = len(letter_probs)
+        out_channels = self.nmotifs * 2
         in_channels = 4
-        lens = np.array([len(i.split('\n')[2:]) for i in data[4:]])
-        height = np.max(lens)
-        maximumpadding = height - np.min(lens)
-        out = np.zeros((out_channels, in_channels, height), dtype=np.float32)
-        mask = torch.zeros((out_channels, 1, height), dtype=torch.uint8)
-        self.nmotifs = len(data) - 4
-        self.version = int(data[0].split(' ')[-1])
-        self.alphabet = data[1][10:].strip()
-        self.strands = data[2][9:].strip()
-        self.background = np.array(data[3].split('\n')[1].split(' ')[1::2],dtype=float)
-        data = data[4:]
-        for k, i in enumerate(data):
-            tmp = i.split('\n')
-            self.names.append(tmp[0].split()[-1])
-            self.headers.append('\n'.join(tmp[:2]))
-            kernel = np.array([j.split() for j in tmp[2:]],dtype=float)
+        matrices = []
+        length = 0
+        for i in range(len(letter_probs)):
+            matrix = letter_probs[i][0].split("\n")
+            if len(matrix[-1]) == 0:
+                matrix = matrix[1:-1]
+            else:
+                matrix = matrix[1:]
+            matrices.append(np.array([i.split() for i in matrix], dtype=float))
+            if matrices[-1].shape[0] > length:
+                length = matrices[-1].shape[0]
+        out = np.zeros((out_channels, in_channels, length), dtype=np.float32)
+        mask = torch.zeros((out_channels, 1, length), dtype=torch.uint8)
+        for k, kernel in enumerate(matrices):
             if transform == "constant":
-                bg=np.repeat(0.25,4).reshape(1,4)
+                bg=np.repeat(0.25, in_channels).reshape(1,4)
             if transform == "local":
                 bg=np.average(kernel,0).reshape(1,4)
             if transform != "none":
@@ -185,6 +268,8 @@ class vcfData:
 
         self.pos = data.iloc[:,1].to_numpy()
 
+        self.variant_names = data.iloc[:, 2].to_numpy()
+
         self.batchsize = batchsize
         self.n = data.shape[0] 
         self.seqs = FastaFile(genome)
@@ -197,6 +282,9 @@ class vcfData:
         
     def __len__(self):
         return int(np.ceil(self.n / self.batchsize))
+
+    def names(self):
+        return self.variant_names
 
     def __getitem__(self, i):
         i1, i2 = i*self.batchsize, (i+1)*self.batchsize
@@ -224,9 +312,6 @@ class vcfData:
                 altmask[i, :, (self.windowsize-1):(alte-alts-self.windowsize+1)] = 1
         return torch.from_numpy(batch), mask, torch.from_numpy(altbatch), altmask #torch.from_numpy(batch)
 
-    def __del__(self):
-        self.out.close()
-
 def countlowercase(arr):
     return sum([1 for c in arr if c.islower()])
 
@@ -243,6 +328,7 @@ def stringstats(string):
 class SegmentData:
     def __init__(self, bed, batchsize, genome, windowsize, up, dinucleotide=False):
         self.chrs, self.starts, self.ends = readbed(bed, up)
+        self.id = ["_".join([c, str(s), str(e)]) for c, s, e in zip(self.chrs, self.starts, self.ends)]
         self.midpoints = np.asarray(np.ceil((self.starts + self.ends)/2),dtype=int)
         self.starts = self.midpoints - windowsize
         self.ends = self.midpoints + windowsize
@@ -256,6 +342,9 @@ class SegmentData:
         self.limits = {refs[i]: lengths[i] for i in range(len(refs))}
         self.out = open("coordinatesUsed.bed", "w")
         self.dinucleotide = dinucleotide
+
+    def names(self):
+        return self.id
 
     def __len__(self):
         return int(np.ceil(self.n / self.batchsize))
