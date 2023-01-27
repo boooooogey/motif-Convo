@@ -7,6 +7,7 @@ import itertools
 import xml.etree.ElementTree as ET
 import os
 from scipy.optimize import curve_fit
+from scipy.interpolate import interp1d
 import regex as re
 from IPython import embed
 
@@ -44,7 +45,7 @@ def init_dist(dmin, dmax, dp, weights, probs):
         out[ii[i]] = out[ii[i]] + probs[i]
     return out
 
-def scoreDist(pwm, nucleotide_prob=None, gran=None, size=1000, diff=False):
+def scoreDist(pwm, nucleotide_prob=None, gran=None, size=1000):
     if nucleotide_prob is None:
         nucleotide_prob = np.ones(4)/4
     if gran is None:
@@ -53,29 +54,27 @@ def scoreDist(pwm, nucleotide_prob=None, gran=None, size=1000, diff=False):
         gran = (np.max(pwm) - np.min(pwm))/(size - 1)
     pwm = np.round(pwm/gran)*gran
     pwm_max, pwm_min = pwm.max(axis=1), pwm.min(axis=1)
-    distribution = init_dist(pwm_min[0], pwm_max[0], gran, pwm[0], nucleotide_prob)
+    distribution = init_dist(pwm_min[0], pwm_max[0], gran, pwm[0], nucleotide_prob[0])
     for i in range(1, pwm.shape[0]):
-        kernel = init_dist(pwm_min[i], pwm_max[i], gran, pwm[i], nucleotide_prob)
+        kernel = init_dist(pwm_min[i], pwm_max[i], gran, pwm[i], nucleotide_prob[i])
         distribution = np.convolve(distribution, kernel)
-    if diff:
-        distribution = np.convolve(distribution, distribution[::-1])
-        support_min = pwm_min.sum() - pwm_max.sum()
-    else:
-        support_min = pwm_min.sum()
+    support_min = pwm_min.sum()
     ii = np.where(distribution > 0)[0]
     support = support_min + (ii) * gran
     return support, distribution[ii]
 
-def return_coef_for_normalization(pwms, nucleotide_prob=None, gran=None, size=1000, length_correction=1):
+def return_coef_for_normalization(pwms, nucleotide_prob=None, gran=None, size=1000):
     params = []
     for i in range(0,pwms.shape[0],2):
         pwm = pwms[i].numpy().T
         pwm = pwm[pwm.sum(axis=1) != 0, :]
-        prob = pwm.sum(axis=0)/pwm.sum()
-        prob = np.ones(pwm.shape[1]) * 0.25
+        #prob = np.exp(pwm).sum(axis=0)/np.exp(pwm).sum()
+        prob = np.exp(pwm)
         s, d = scoreDist(pwm, prob, gran, size)
-        param, _ = curve_fit(logit, s, np.power(np.cumsum(d), length_correction))
-        params.append(param)
+        #param, _ = curve_fit(logit, np.exp(s), np.power(np.cumsum(d),30), maxfev=5000)
+        f = interp1d(np.exp(s), np.cumsum(d))
+        #params.append(param)
+        params.append(f)
     return params
 
 def return_coef_for_normalization_diff(pwms, nucleotide_prob=None, gran=None, size=1000, length_correction=1):
@@ -94,8 +93,9 @@ def normalize_mat(mat, params):
     out = np.empty_like(mat)
     assert mat.shape[1] == len(params)
     for i in range(len(params)):
-        out[:,i] = logit(mat[:,i], *params[i])
-    return torch.from_numpy(out)
+        #out[:,i] = logit(mat[:,i], *params[i])
+        out[:,i] = params[i](np.clip(mat[:,i],params[i].x.min(), params[i].x.max()))
+    return out
 
 #def readvcf(filename):
 #    nh = number_of_headers(filename)
@@ -170,8 +170,15 @@ def read_TFFM(file):
             data.append(discrete.text.split(","))
     return np.array(data, dtype=float)
 
+def transform_kernel(kernel, smoothing, background):
+    out = np.log(kernel / background + smoothing)
+    c = out.max(axis=1)
+    out = out - c[:, np.newaxis]
+    norm = out.min(axis=1).sum()
+    return out, norm
+
 class MEME():
-    def __init__(self):
+    def __init__(self, precision=1e-7, smoothing=0.02, background=None):
         self.version = 0
         self.alphabet = ""
         self.strands = ""
@@ -179,8 +186,15 @@ class MEME():
         self.background = []
         self.names = []
         self.nmotifs = 0
+        self.precision=1e-7
+        self.smoothing = smoothing
+        if background is None:
+            self.background = np.ones(4)*0.25
+        else:
+            self.background = background
 
-    def parse(self, text, transform):
+    def parse(self, text):
+        precision = self.precision
         with open(text,'r') as file:
             data = file.read()
         self.version = re.compile(r'MEME version ([\d+\.*]+)').match(data).group(1)
@@ -207,19 +221,73 @@ class MEME():
         out = np.zeros((out_channels, in_channels, length), dtype=np.float32)
         mask = torch.zeros((out_channels, 1, length), dtype=torch.uint8)
         for k, kernel in enumerate(matrices):
-            if transform == "constant":
-                bg=np.repeat(0.25, in_channels).reshape(1,4)
-            if transform == "local":
-                bg=np.average(kernel,0).reshape(1,4)
-            if transform != "none":
-                offset=np.min(kernel[kernel>0])
-                bgMat=np.tile(bg,(kernel.shape[0],1))
-                kernel=np.log((kernel+offset)/bgMat)
+            #if transform == "constant":
+            #    bg=np.repeat(0.25, in_channels).reshape(1,4)
+            #if transform == "local":
+            #    bg=np.average(kernel,0).reshape(1,4)
+            #if transform != "none":
+            #    offset=np.min(kernel[kernel>0])
+            #    bgMat=np.tile(bg,(kernel.shape[0],1))
+            #    kernel=np.log((kernel+offset)/bgMat)
+            kernel[kernel == 0] = self.precision
+            kernel = np.log(kernel)
             out[2*k  , :, :kernel.shape[0]] = kernel.T
             out[2*k+1, :, :kernel.shape[0]] = kernel[::-1, ::-1].T
             mask[2*k  , :, :kernel.shape[0]] = 1
             mask[2*k+1, :, :kernel.shape[0]] = 1
         return torch.from_numpy(out), mask
+
+class MEME_with_Transformation():
+    def __init__(self, precision=1e-7, smoothing=0.02, background=None):
+        self.version = 0
+        self.alphabet = ""
+        self.strands = ""
+        #self.headers = []
+        self.background = []
+        self.names = []
+        self.nmotifs = 0
+        self.precision=1e-7
+        self.smoothing = smoothing
+        if background is None:
+            self.background_prob = np.ones(4)*0.25
+        else:
+            self.background_prob = background
+
+    def parse(self, text):
+        precision = self.precision
+        with open(text,'r') as file:
+            data = file.read()
+        self.version = re.compile(r'MEME version ([\d+\.*]+)').match(data).group(1)
+        self.names = re.findall(r"MOTIF (.*)\n", data)
+        self.background = re.findall(r"Background letter frequencies.*\n(A .* C .* G .* T .*)\n", data)[0]
+        self.strands = re.findall(r"strands: (.*)\n", data)[0].strip()
+        self.alphabet = re.findall(r"ALPHABET=(.*)\n", data)[0].strip()
+        letter_probs = re.findall(r"(letter-probability.*\n([ \t]*\d+\.?\d*[ \t]+\d+\.?\d*[ \t]+\d+\.?\d*[ \t]+\d+\.?\d*[ \t]*\n)+)", data)
+        assert len(letter_probs) == len(self.names)
+        self.nmotifs = len(letter_probs)
+        out_channels = self.nmotifs * 2
+        in_channels = 4
+        matrices = []
+        length = 0
+        for i in range(len(letter_probs)):
+            matrix = letter_probs[i][0].split("\n")
+            if len(matrix[-1]) == 0:
+                matrix = matrix[1:-1]
+            else:
+                matrix = matrix[1:]
+            matrices.append(np.array([i.split() for i in matrix], dtype=float))
+            if matrices[-1].shape[0] > length:
+                length = matrices[-1].shape[0]
+        out = np.zeros((out_channels, in_channels, length), dtype=np.float32)
+        mask = torch.zeros((out_channels, 1, length), dtype=torch.uint8)
+        motif_norms = np.zeros(self.nmotifs, dtype=np.float32)
+        for k, kernel in enumerate(matrices):
+            kernel, motif_norms[k] = transform_kernel(kernel, self.smoothing, self.background_prob)
+            out[2*k  , :, :kernel.shape[0]] = kernel.T
+            out[2*k+1, :, :kernel.shape[0]] = kernel[::-1, ::-1].T
+            mask[2*k  , :, :kernel.shape[0]] = 1
+            mask[2*k+1, :, :kernel.shape[0]] = 1
+        return torch.from_numpy(out), mask, motif_norms
 
 class TFFM():
     def __init__(self):
@@ -375,7 +443,8 @@ class SegmentData:
         return torch.from_numpy(batch), stats
 
     def __del__(self):
-        self.out.close()
+        pass
+        #self.out.close()
 
 if __name__ == "__main__":
     motif = MEME()

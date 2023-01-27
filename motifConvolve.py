@@ -5,6 +5,7 @@ import pandas as pd
 from util import MEME, TFFM, SegmentData, kmers, return_coef_for_normalization, normalize_mat
 import torch
 import numpy as np
+from IPython import embed
 
 torch.backends.cudnn.deterministic = True
 
@@ -33,7 +34,7 @@ def main():
     print(f"Reading motifs from {args.motifs}")
     if args.kernel == "PWM":
         motif = MEME()
-        kernels, _ = motif.parse(args.motifs, args.transform)
+        kernels, _ = motif.parse(args.motifs)#, args.transform)
         if normalize:
             normalization_params = return_coef_for_normalization(kernels)
     elif args.kernel == "TFFM":
@@ -54,10 +55,10 @@ def main():
         if i2 >= segments.n: i2 = segments.n
         mat, out[i1:i2, motif.nmotifs:] = segments[i]
         tmp = F.conv1d(mat, kernels)
-        if normalize:
-            tmp = normalize_mat(tmp, normalization_params)
         if args.kernel == "PWM":
             tmp = tmp.view(tmp.shape[0], tmp.shape[1]//2, tmp.shape[2]*2)
+            if normalize:
+                tmp = torch.from_numpy(normalize_mat(np.exp(tmp), normalization_params))
         if args.mode == "average":
             tmp = F.avg_pool1d(tmp, tmp.shape[2]).numpy()
         if args.mode == "max":
