@@ -67,15 +67,22 @@ def main():
             tmp = F.conv1d(mat.to(device), kernels.to(device)).cpu()
         else:
             tmp = F.conv1d(mat, kernels)
-        if args.kernel == "PWM":
-            tmp = tmp.view(tmp.shape[0], tmp.shape[1]//2, tmp.shape[2]*2)
-            if normalize:
-                #tmp = torch.from_numpy(normalize_mat(np.exp(tmp), normalization_params))
-                tmp = normalize_mat(np.exp(tmp), normalization_params)
         if args.mode == "average":
+            if args.kernel == "PWM":
+                tmp = tmp.view(tmp.shape[0], tmp.shape[1]//2, tmp.shape[2]*2)
+                if normalize:
+                    #tmp = torch.from_numpy(normalize_mat(np.exp(tmp), normalization_params))
+                    tmp = normalize_mat(np.exp(tmp), normalization_params)
             tmp = F.avg_pool1d(tmp, tmp.shape[2]).numpy()
         if args.mode == "max":
-            tmp = F.max_pool1d(tmp, tmp.shape[2]).numpy()
+            if args.kernel == "PWM":
+                tmp = tmp.view(tmp.shape[0], tmp.shape[1]//2, tmp.shape[2]*2)
+            tmp = F.max_pool1d(tmp, tmp.shape[2])
+            if args.kernel == "PWM":
+                if normalize:
+                    #tmp = torch.from_numpy(normalize_mat(np.exp(tmp), normalization_params))
+                    tmp = normalize_mat(np.exp(tmp), normalization_params)
+            tmp = tmp.numpy()
         out[i1:i2, :motif.nmotifs] = tmp.reshape(tmp.shape[0], tmp.shape[1])
     print(f"Writing the results to {args.out}")
     write_output(args.out, out, motif.names, segments.names())
