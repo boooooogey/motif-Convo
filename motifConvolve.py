@@ -28,8 +28,17 @@ def main():
     parser.add_argument('--mode', choices = ["max", "average"], default="max", help="Operation mode for the pooling layer (max/average)")
     parser.add_argument('--normalize', action="store_true", help="Apply nonlinear normalization.")
     parser.add_argument('--kernel', choices = ["TFFM", "PWM"], default="PWM", help="Choose between PWM (4 dimensional) or TFFM (16 dimensional) (default = PWM).")
+    parser.add_argument('--try-gpu', action="store_true", help="Look for GPU.")
     args = parser.parse_args()
     normalize = args.normalize
+
+    if args.try_gpu:
+        device_name = "cuda" if torch.cuda.is_available() else "cpu" 
+        device = torch.device(device_name)
+    else:
+        device_name = "cpu" 
+
+    print(f"Device name: {device_name}")
 
     print(f"Reading motifs from {args.motifs}")
     if args.kernel == "PWM":
@@ -54,11 +63,15 @@ def main():
         i1, i2 = i*args.batch, (i+1)*args.batch
         if i2 >= segments.n: i2 = segments.n
         mat, out[i1:i2, motif.nmotifs:] = segments[i]
-        tmp = F.conv1d(mat, kernels)
+        if device_name != "cpu":
+            tmp = F.conv1d(mat.to(device), kernels.to(device)).cpu()
+        else:
+            tmp = F.conv1d(mat, kernels)
         if args.kernel == "PWM":
             tmp = tmp.view(tmp.shape[0], tmp.shape[1]//2, tmp.shape[2]*2)
             if normalize:
-                tmp = torch.from_numpy(normalize_mat(np.exp(tmp), normalization_params))
+                #tmp = torch.from_numpy(normalize_mat(np.exp(tmp), normalization_params))
+                tmp = normalize_mat(np.exp(tmp), normalization_params)
         if args.mode == "average":
             tmp = F.avg_pool1d(tmp, tmp.shape[2]).numpy()
         if args.mode == "max":

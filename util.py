@@ -38,6 +38,9 @@ def kmers(k=2):
 def logit(x, a, b):
     return 1/(1 + np.exp(-a * x - b))
 
+def logit_torch(x, a, b):
+    return 1/(1 + torch.exp(-a * x - b))
+
 def init_dist(dmin, dmax, dp, weights, probs):
     out = np.zeros(int(np.round((dmax-dmin)/dp)+1))
     ii = np.array(np.round((weights-dmin)/dp), dtype=int)
@@ -71,10 +74,11 @@ def return_coef_for_normalization(pwms, nucleotide_prob=None, gran=None, size=10
         #prob = np.exp(pwm).sum(axis=0)/np.exp(pwm).sum()
         prob = np.exp(pwm)
         s, d = scoreDist(pwm, prob, gran, size)
-        #param, _ = curve_fit(logit, np.exp(s), np.power(np.cumsum(d),30), maxfev=5000)
-        f = interp1d(np.exp(s), np.cumsum(d))
+        param, _ = curve_fit(logit, np.exp(s), np.cumsum(d), maxfev=5000)
+        #f = interp1d(np.exp(s), np.cumsum(d))
+        #print(curve_fit(logit, np.exp(s), np.cumsum(d), maxfev=5000))
         #params.append(param)
-        params.append(f)
+        params.append(param)
     return params
 
 def return_coef_for_normalization_diff(pwms, nucleotide_prob=None, gran=None, size=1000, length_correction=1):
@@ -90,11 +94,13 @@ def return_coef_for_normalization_diff(pwms, nucleotide_prob=None, gran=None, si
     return params
 
 def normalize_mat(mat, params):
-    out = np.empty_like(mat)
+    out = torch.empty_like(mat)
     assert mat.shape[1] == len(params)
     for i in range(len(params)):
         #out[:,i] = logit(mat[:,i], *params[i])
-        out[:,i] = params[i](np.clip(mat[:,i],params[i].x.min(), params[i].x.max()))
+        #tmp = np.clip(mat[:,i],params[i].x.min(), params[i].x.max())
+        #tmp = params[i](tmp)
+        out[:,i] = logit_torch(mat[:,i], *params[i])
     return out
 
 #def readvcf(filename):
