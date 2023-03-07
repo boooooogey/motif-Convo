@@ -1,0 +1,42 @@
+[build-system]
+requires = [
+    "hatchling",
+    "numpy",
+    "scipy",
+    "torch",
+    "regex",
+    "pandas",
+    "pysam",
+    "einops",
+    "typer"
+]
+build-backend = "hatchling.build"
+
+[project.scripts]
+motifConvolve = "motifConvolve.motifConvolve:app"
+
+[project]
+name = "motifConvolve"
+version = "0.0.1"
+authors = [
+    { name="Ali Tugrul Balci", email="alitugrulbalci@gmail.com" },
+    { name="Maria Chikina", email="mchikina@gmail.com" }
+]
+description = "Extract transcription factor features from DNA sequences using convolution"
+readme = "README.md"
+requires-python = ">=3.7"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+[options]
+package_dir = "src"
+
+[options.packages.find]
+where = "src"
+
+[project.urls]
+"Homepage" = "https://github.com/boooooogey/motif-Convo"
+"Bug Tracker" = "https://github.com/boooooogey/motif-Convo/issues"

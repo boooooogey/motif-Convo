@@ -9,7 +9,6 @@ import os
 from scipy.optimize import curve_fit
 from scipy.interpolate import interp1d
 import regex as re
-from IPython import embed
 
 def number_of_headers(filename):
     header=0
