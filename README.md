@@ -1,9 +1,13 @@
 # motif-Convo
-Finds motifs using convolution
+Extracts features using motif convolution
+## Installation
+```
+python -m pip install git+https://github.com/boooooogey/motif-Convo.git
+```
 ## How to use
 To run it:
 ```
-python motifconvolvetorch.py --meme meme_file --bed bed_file --genome genome.fa --mode max/average --out matrix_out_file
+motifConvolve tfextract --meme meme_file --bed bed_file --genome genome.fa --mode max/average --out matrix_out_file
 ```
 - ```meme_file```  is a MEME motif file.
 - ```bed_file```  is a bed file that contains ATAC peaks. 
