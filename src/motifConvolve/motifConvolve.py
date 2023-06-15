@@ -125,11 +125,13 @@ def variantdiff(genome: str = typer.Option(..., help="fasta file for the genome"
                 ):
 
 
+
+    kernel = kernel.value
     if kernel == "PWM":
         motif = MEME_with_Transformation()
         print(f"Reading the motifs from {motif_file}")
         kernels, kernel_mask, kernel_norms = motif.parse(motif_file)#, args.transform)
-        windowsize = kernesl.shape[2]
+        windowsize = kernels.shape[2]
         #motif = MEME()
         #kernels, _ = motif.parse(motif_file)#, args.transform)
         #if normalize:
@@ -138,7 +140,7 @@ def variantdiff(genome: str = typer.Option(..., help="fasta file for the genome"
         motif = TFFM()
         print(f"Reading the motifs from {motif_file}")
         kernels, kernel_mask, kernel_norms = motif.parse(motif_file)#, args.transform)
-        windowsize = kernesl.shape[2] + 1
+        windowsize = kernels.shape[2] + 1
         #motif = MEME()
         #kernels, _ = motif.parse(motif_file)
         #normalize = False

@@ -328,7 +328,6 @@ class TFFM():
         mask = torch.zeros((out_channels, 1 , height), dtype=torch.uint8)
         motif_norms = np.zeros(out_channels, dtype=np.float32)
         for n, tffm in enumerate(data):
-            print(tffm)
             kernel, motif_norms[n] = transform_kernel(tffm, self.smoothing, self.background_prob)
             out[n, :, :tffm.shape[0]] = kernel.T
             mask[n, :, :tffm.shape[0]] = 1
