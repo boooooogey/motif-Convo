@@ -163,7 +163,7 @@ def variantdiff(genome: str = typer.Option(..., help="fasta file for the genome"
         motif_mask = F.conv1d(maskref, kernel_mask)
         ref[motif_mask == 0] = -torch.inf
         ref = F.max_pool1d(ref, ref.shape[2]).numpy()
-        if kernel = "PWM":
+        if kernel == "PWM":
             ref = np.max(ref.reshape(ref.shape[0],-1,2), axis=2)
         outRef[i1:i2, :motif.nmotifs] = ref 
 
@@ -171,7 +171,7 @@ def variantdiff(genome: str = typer.Option(..., help="fasta file for the genome"
         motif_mask = F.conv1d(maskalt, kernel_mask)
         alt[motif_mask == 0] = -torch.inf
         alt = F.max_pool1d(alt, alt.shape[2]).numpy()
-        if kernel = "PWM":
+        if kernel == "PWM":
             alt = np.max(alt.reshape(alt.shape[0],-1,2), axis=2)
         outAlt[i1:i2, :motif.nmotifs] = alt
 
