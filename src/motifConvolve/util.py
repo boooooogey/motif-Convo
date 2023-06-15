@@ -140,6 +140,14 @@ def readbed(filename, up):
         end = end + (strand == "-") * up #[end[i]+up if strand[i]=="-" else end[i] for i in range(len(start))]
     return chrs, start, end
 
+def returnmask(i, mask, windowsize, start, end, dinucleotide):
+    if dinucleotide:
+        tmp = np.zeros(mask.shape[2]+1)
+        tmp[(windowsize-1):(end-start-windowsize+1)] = 1
+        mask[i,:,:] = torch.from_numpy(np.convolve(tmp, [1,1], mode="valid"))
+    else:
+        mask[i, :, (windowsize-1):(end-start-windowsize+1)] = 1
+
 def returnonehot(string, dinucleotide=False):
     string = string.upper()
     tmp = np.array(list(string))
@@ -295,9 +303,14 @@ class MEME_with_Transformation():
         return torch.from_numpy(out), mask, motif_norms
 
 class TFFM():
-    def __init__(self):
+    def __init__(self, smoothing=0.02, background=None):
         self.names = []
         self.nmotifs = 0
+        self.smoothing = smoothing
+        if background is None:
+            self.background_prob = np.ones(16)*1/16
+        else:
+            self.background_prob = background
 
     def parse(self, directory):
         self.names = os.listdir(directory)
@@ -313,13 +326,16 @@ class TFFM():
                 height = tffm.shape[0]
         out = np.zeros((out_channels, in_channels, height), dtype=np.float32)
         mask = torch.zeros((out_channels, 1 , height), dtype=torch.uint8)
+        motif_norms = np.zeros(out_channels, dtype=np.float32)
         for n, tffm in enumerate(data):
-            out[n, :, :tffm.shape[0]] = tffm.T
+            print(tffm)
+            kernel, motif_norms[n] = transform_kernel(tffm, self.smoothing, self.background_prob)
+            out[n, :, :tffm.shape[0]] = kernel.T
             mask[n, :, :tffm.shape[0]] = 1
-        return torch.from_numpy(out), mask
+        return torch.from_numpy(out), mask, motif_norms
 
 class vcfData:
-    def __init__(self, vcf, batchsize, genome, windowsize):
+    def __init__(self, vcf, batchsize, genome, windowsize, dinucleotide=False):
         data = readvcf(vcf)
         self.headers = data.columns.to_list()
         
@@ -351,7 +367,8 @@ class vcfData:
         lengths = self.seqs.lengths
         self.limits = {refs[i]: lengths[i] for i in range(len(refs))}
         self.out = open("coordinatesUsed.bed", "w")
-        self.lookup = {'A':0, 'C':1, 'G':2, 'T':3}
+
+        self.dinucleotide=dinucleotide
         
     def __len__(self):
         return int(np.ceil(self.n / self.batchsize))
@@ -364,8 +381,14 @@ class vcfData:
         if i2 >= self.n: i2 = self.n
         batchsize = int(i2 - i1)
         targetlength = max(np.max(self.reflength[i1:i2]), np.max(self.altlength[i1:i2]))
-        height = (self.windowsize-1)*2 + targetlength #np.max(self.ends[i1:i2] - self.starts[i1:i2])# + self.padding
-        width = 4
+        if self.dinucleotide:
+            offset = 1
+            height = (self.windowsize-1)*2 + targetlength - 1 #np.max(self.ends[i1:i2] - self.starts[i1:i2])# + self.padding
+            width = 16 
+        else:
+            offset = 0
+            height = (self.windowsize-1)*2 + targetlength #np.max(self.ends[i1:i2] - self.starts[i1:i2])# + self.padding
+            width = 4
         batch = np.zeros((batchsize, width, height), dtype=np.float32) 
         mask = torch.zeros((batchsize, 1, height), dtype=torch.uint8)
         altbatch = np.zeros((batchsize, width, height), dtype=np.float32) 
@@ -379,10 +402,12 @@ class vcfData:
                 #print(f"a: ({a}, {self.lookup[a]}), r: ({r}, {self.lookup[r]}), Target: {seg[self.windowsize-1]}")
                 #assert(seg[self.windowsize-1]==r or len(a)!=1 or len(r)!=1)
                 assert(seg[self.windowsize-1:-(self.windowsize-1)]==r)
-                batch[i, :, :(refe-refs)] = returnonehot(seg)
-                mask[i, :, (self.windowsize-1):(refe-refs-self.windowsize+1)] = 1
-                altbatch[i, :, :(alte-alts)] = returnonehot(seg[:self.windowsize-1] + a + seg[-(self.windowsize-1):])
-                altmask[i, :, (self.windowsize-1):(alte-alts-self.windowsize+1)] = 1
+                batch[i, :, :(refe-refs-offset)] = returnonehot(seg, self.dinucleotide)
+                returnmask(i, mask, self.windowsize, refs, refe, self.dinucleotide)
+                #mask[i, :, (self.windowsize-1):(refe-refs-self.windowsize+1)] = 1
+                altbatch[i, :, :(alte-alts-offset)] = returnonehot(seg[:self.windowsize-1] + a + seg[-(self.windowsize-1):], self.dinucleotide)
+                returnmask(i, altmask, self.windowsize, alts, alte, self.dinucleotide)
+                #altmask[i, :, (self.windowsize-1):(alte-alts-self.windowsize+1)] = 1
         return torch.from_numpy(batch), mask, torch.from_numpy(altbatch), altmask #torch.from_numpy(batch)
 
 def countlowercase(arr):

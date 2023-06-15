@@ -121,16 +121,32 @@ def variantdiff(genome: str = typer.Option(..., help="fasta file for the genome"
                  vcf: str = typer.Option(..., help="vcf file"), 
                  batch: int = typer.Option(128, help="batch size"),
                  out_file: str = typer.Option(..., "--out", help="output directory"),
+                 kernel: kernel_type = typer.Option(kernel_type.PWM, help="Choose between PWM (4 dimensional) or TFFM (16 dimensional) (default = PWM)."),
                 ):
 
-    motif = MEME_with_Transformation()
-    print(f"Reading the motifs from {motif_file}")
-    kernels, kernel_mask, kernel_norms = motif.parse(motif_file)#, args.transform)
+
+    if kernel == "PWM":
+        motif = MEME_with_Transformation()
+        print(f"Reading the motifs from {motif_file}")
+        kernels, kernel_mask, kernel_norms = motif.parse(motif_file)#, args.transform)
+        windowsize = kernesl.shape[2]
+        #motif = MEME()
+        #kernels, _ = motif.parse(motif_file)#, args.transform)
+        #if normalize:
+        #    normalization_params = return_coef_for_normalization(kernels)
+    elif kernel == "TFFM":
+        motif = TFFM()
+        print(f"Reading the motifs from {motif_file}")
+        kernels, kernel_mask, kernel_norms = motif.parse(motif_file)#, args.transform)
+        windowsize = kernesl.shape[2] + 1
+        #motif = MEME()
+        #kernels, _ = motif.parse(motif_file)
+        #normalize = False
 
     print(f"Reading variants from {vcf}")
     print(f"Genome: {genome}")
 
-    segments = vcfData(vcf, batch, genome, kernels.shape[2])
+    segments = vcfData(vcf, batch, genome, windowsize, dinucleotide=(kernel == "TFFM"))
     outRef = np.empty((segments.n, motif.nmotifs), dtype=np.float32)
     outAlt = np.empty((segments.n, motif.nmotifs), dtype=np.float32)
     alpha = 0.1
