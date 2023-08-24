@@ -131,22 +131,27 @@ def readbed(filename, up):
     chrs = data[0].to_numpy()
     start = data[1].to_numpy(dtype=int)
     end = data[2].to_numpy(dtype=int)
-    if(data.shape[1] > 5): #get the strand
-        print("Strand detected")
-        up = int(np.floor(up))
-        strand = data[5].to_numpy()
-        #adjust the regions to acccount for strand and up
-        start = start - (strand == "+") * up #[start[i]-up if strand[i]=="+" else start[i] for i in range(len(start))]
-        end = end + (strand == "-") * up #[end[i]+up if strand[i]=="-" else end[i] for i in range(len(start))]
-    return chrs, start, end
+    if (data.shape[1]>3):
+        peaks = data[3].to_numpy(dtype=str)
+        if(data.shape[1] > 5): #get the strand   
+            print("Strand detected")
+            up = int(np.floor(up))
+            strand = data[5].to_numpy()
+            #adjust the regions to acccount for strand and up
+            start = start - (strand == "+") * up #[start[i]-up if strand[i]=="+" else start[i] for i in range(len(start))]
+            end = end + (strand == "-") * up #[end[i]+up if strand[i]=="-" else end[i] for i in range(len(start))]
+    else:
+        peaks=np.array([None]*len(chrs))
+    return chrs, start, end, peaks
 
 def returnmask(i, mask, windowsize, start, end, dinucleotide):
     if dinucleotide:
         tmp = np.zeros(mask.shape[2]+1)
-        tmp[(windowsize-1):(end-start-windowsize+1)] = 1
+        tmp[int(windowsize-1):int(end-start-windowsize+1)] = 1
         mask[i,:,:] = torch.from_numpy(np.convolve(tmp, [1,1], mode="valid"))
     else:
         mask[i, :, (windowsize-1):(end-start-windowsize+1)] = 1
+
 
 def returnonehot(string, dinucleotide=False):
     string = string.upper()
@@ -183,8 +188,20 @@ def read_TFFM(file):
             data.append(discrete.text.split(","))
     return np.array(data, dtype=float)
 
+def read_dpwm(filename):
+    with open(filename,'r') as file:
+        lines = file.readlines()
+    values = []
+    for line in lines:
+        if not line.startswith(">"):
+            values.append(line.strip().split("\t"))
+    return np.array(values, dtype=float)
+
 def transform_kernel(kernel, smoothing, background):
-    out = np.log(kernel / background + smoothing)
+    if np.min(kernel)<0:
+        out=kernel
+    else: 
+        out = np.log(kernel / background + smoothing)
     c = out.max(axis=1)
     out = out - c[:, np.newaxis]
     norm = out.min(axis=1).sum()
@@ -206,7 +223,7 @@ class MEME():
         else:
             self.background = background
 
-    def parse(self, text):
+    def parse(self, text): #, transform):
         precision = self.precision
         with open(text,'r') as file:
             data = file.read()
@@ -240,8 +257,8 @@ class MEME():
             #    bg=np.average(kernel,0).reshape(1,4)
             #if transform != "none":
             #    offset=np.min(kernel[kernel>0])
-            #    bgMat=np.tile(bg,(kernel.shape[0],1))
-            #    kernel=np.log((kernel+offset)/bgMat)
+            #   bgMat=np.tile(bg,(kernel.shape[0],1))
+            #   kernel=np.log((kernel+offset)/bgMat)
             kernel[kernel == 0] = self.precision
             kernel = np.log(kernel)
             out[2*k  , :, :kernel.shape[0]] = kernel.T
@@ -265,7 +282,7 @@ class MEME_with_Transformation():
             self.background_prob = np.ones(4)*0.25
         else:
             self.background_prob = background
-
+            
     def parse(self, text):
         precision = self.precision
         with open(text,'r') as file:
@@ -303,14 +320,9 @@ class MEME_with_Transformation():
         return torch.from_numpy(out), mask, motif_norms
 
 class TFFM():
-    def __init__(self, smoothing=0.02, background=None):
+    def __init__(self):
         self.names = []
         self.nmotifs = 0
-        self.smoothing = smoothing
-        if background is None:
-            self.background_prob = np.ones(16)*1/16
-        else:
-            self.background_prob = background
 
     def parse(self, directory):
         self.names = os.listdir(directory)
@@ -326,15 +338,56 @@ class TFFM():
                 height = tffm.shape[0]
         out = np.zeros((out_channels, in_channels, height), dtype=np.float32)
         mask = torch.zeros((out_channels, 1 , height), dtype=torch.uint8)
-        motif_norms = np.zeros(out_channels, dtype=np.float32)
         for n, tffm in enumerate(data):
-            kernel, motif_norms[n] = transform_kernel(tffm, self.smoothing, self.background_prob)
-            out[n, :, :tffm.shape[0]] = kernel.T
+            out[n, :, :tffm.shape[0]] = tffm.T
             mask[n, :, :tffm.shape[0]] = 1
+        return torch.from_numpy(out), mask
+
+class TFFM_with_Transformation():
+    def __init__(self, precision=1e-7, smoothing=0.02, background=None):
+        self.names = []
+        self.nmotifs = 0
+        self.precision=1e-7
+        self.smoothing = smoothing
+        self.background = []
+        if background is None:
+            self.background_prob = np.ones(16)*0.0625
+        else:
+            self.background_prob = background
+    def parse(self, directory):
+        self.names = os.listdir(directory)
+        self.nmotifs = len(self.names)
+        in_channels = 16
+        out_channels = self.nmotifs * 2
+        data = []
+        height = 0
+        for i in self.names:
+            if i.endswith(".dpwm"):
+                tffm = read_dpwm(os.path.join(directory, i))
+                data.append(tffm)
+                if tffm.shape[0]>height:
+                    height = tffm.shape[0]               
+            else:
+                tffm = read_TFFM(os.path.join(directory, i))
+                data.append(tffm)
+                if tffm.shape[0] > height:
+                    height = tffm.shape[0]
+        #print(data)
+        out = np.zeros((out_channels, in_channels, height), dtype=np.float32)
+        mask = torch.zeros((out_channels, 1 , height), dtype=torch.uint8)
+        motif_norms = np.zeros(self.nmotifs, dtype=np.float32)
+        for n, tffm in enumerate(data):
+            tffm, motif_norms[n] = transform_kernel(tffm, self.smoothing, self.background_prob)
+            out[2*n  , :, :tffm.shape[0]] = tffm.T
+            out[2*n+1, :, :tffm.shape[0]] = tffm[::-1, ::-1].T
+            mask[2*n , :, :tffm.shape[0]] = 1
+            mask[2*n+1,:, :tffm.shape[0]] = 1
         return torch.from_numpy(out), mask, motif_norms
 
+
+
 class vcfData:
-    def __init__(self, vcf, batchsize, genome, windowsize, dinucleotide=False):
+    def __init__(self, vcf, batchsize, genome, windowsize, dinucleotide = False):
         data = readvcf(vcf)
         self.headers = data.columns.to_list()
         
@@ -366,8 +419,8 @@ class vcfData:
         lengths = self.seqs.lengths
         self.limits = {refs[i]: lengths[i] for i in range(len(refs))}
         self.out = open("coordinatesUsed.bed", "w")
-
-        self.dinucleotide=dinucleotide
+        self.lookup = {'A':0, 'C':1, 'G':2, 'T':3}
+        self.dinucleotide = dinucleotide
         
     def __len__(self):
         return int(np.ceil(self.n / self.batchsize))
@@ -385,7 +438,7 @@ class vcfData:
             height = (self.windowsize-1)*2 + targetlength - 1 #np.max(self.ends[i1:i2] - self.starts[i1:i2])# + self.padding
             width = 16 
         else:
-            offset = 0
+            offset=0
             height = (self.windowsize-1)*2 + targetlength #np.max(self.ends[i1:i2] - self.starts[i1:i2])# + self.padding
             width = 4
         batch = np.zeros((batchsize, width, height), dtype=np.float32) 
@@ -400,13 +453,13 @@ class vcfData:
                 #print(f"Sequence: {seg[:self.windowsize-1]} {seg[self.windowsize-1]} {seg[self.windowsize:]}")
                 #print(f"a: ({a}, {self.lookup[a]}), r: ({r}, {self.lookup[r]}), Target: {seg[self.windowsize-1]}")
                 #assert(seg[self.windowsize-1]==r or len(a)!=1 or len(r)!=1)
+                #print(i, c, refs+int(self.windowsize), seg[self.windowsize-1:-(self.windowsize-1)], r)
                 assert(seg[self.windowsize-1:-(self.windowsize-1)]==r)
-                batch[i, :, :(refe-refs-offset)] = returnonehot(seg, self.dinucleotide)
+                batch[i, :, :int(refe-refs-offset)] = returnonehot(seg, self.dinucleotide)
                 returnmask(i, mask, self.windowsize, refs, refe, self.dinucleotide)
-                #mask[i, :, (self.windowsize-1):(refe-refs-self.windowsize+1)] = 1
-                altbatch[i, :, :(alte-alts-offset)] = returnonehot(seg[:self.windowsize-1] + a + seg[-(self.windowsize-1):], self.dinucleotide)
+                #print(f"{seg[:self.windowsize-1]} + {a} + {seg[-(self.windowsize-1):]}")
+                altbatch[i, :, :int(alte-alts-offset)] = returnonehot(seg[:self.windowsize-1] + a + seg[-(self.windowsize-1):], self.dinucleotide)
                 returnmask(i, altmask, self.windowsize, alts, alte, self.dinucleotide)
-                #altmask[i, :, (self.windowsize-1):(alte-alts-self.windowsize+1)] = 1
         return torch.from_numpy(batch), mask, torch.from_numpy(altbatch), altmask #torch.from_numpy(batch)
 
 def countlowercase(arr):
@@ -424,17 +477,21 @@ def stringstats(string):
 
 class SegmentData:
     def __init__(self, bed, batchsize, genome, windowsize, up, dinucleotide=False):
-        self.chrs, self.starts, self.ends = readbed(bed, up)
+        self.chrs, self.starts, self.ends, self.peaks = readbed(bed, up)
         self.id = ["_".join([c, str(s), str(e)]) for c, s, e in zip(self.chrs, self.starts, self.ends)]
         self.midpoints = np.asarray(np.ceil((self.starts + self.ends)/2),dtype=int)
-        self.starts = self.midpoints - windowsize
-        self.ends = self.midpoints + windowsize
-        self.batchsize = batchsize
-        self.n = len(self.chrs)
         self.seqs = FastaFile(genome)
-        self.padding = windowsize
         refs = self.seqs.references
         lengths = self.seqs.lengths
+        if windowsize>(min(lengths)/2):
+            self.new_starts = self.starts
+            self.new_ends=self.ends
+        else:
+            self.new_starts = self.midpoints - windowsize
+            self.new_ends = self.midpoints + windowsize
+        self.batchsize = batchsize
+        self.n = len(self.chrs)
+        self.padding = windowsize
         self.additional = 4 * 4 + 2
         self.limits = {refs[i]: lengths[i] for i in range(len(refs))}
         self.out = open("coordinatesUsed.bed", "w")
@@ -458,17 +515,23 @@ class SegmentData:
             width = 4
         batch = np.zeros((batchsize, width, height), dtype=np.float32) 
         stats = np.empty((batchsize, self.additional), dtype=np.float32)
-        for i, c, s, e in zip(range(i2-i1), self.chrs[i1:i2], self.starts[i1:i2], self.ends[i1:i2]):
+        for i, c, p, s, e, new_s, new_e in zip(range(i2-i1), self.chrs[i1:i2], self.peaks[i1:i2], self.starts[i1:i2], self.ends[i1:i2], self.new_starts[i1:i2], self.new_ends[i1:i2]):
             self.out.write(c+"\t"+str(s)+"\t"+str(e)+"\n")
-            if s>0 and e<self.limits[c]:
-                seg = self.seqs.fetch(c, s, e)
+            if all(self.peaks!=None) and all('peak' in string for string in self.peaks):
+                if i==0: print('peaks available')
+                seg = self.seqs.fetch(p, new_s-s, new_e-s)
             else:
-                seg = "N"*(self.padding*2)
+                if i==0: print('peaks not available')
+                if s>0 and e<self.limits[c]:
+                    seg = self.seqs.fetch(c, new_s, new_e)
+                else:
+                    seg = "N"*(self.padding*2)
+            
             stats[i] = stringstats(seg)
             if self.dinucleotide:
-                batch[i, :, :(e-s)-1] = returnonehot(seg, dinucleotide=True)
+                batch[i, :, :(new_e-new_s)-1] = returnonehot(seg, dinucleotide=True)
             else:
-                batch[i, :, :(e-s)] = returnonehot(seg)
+                batch[i, :, :(new_e-new_s)] = returnonehot(seg)
         return torch.from_numpy(batch), stats
 
     def __del__(self):
@@ -485,4 +548,3 @@ if __name__ == "__main__":
         orig, alt = segments[i]
     end = time.time()
     print(f"other took {end-start}")
-
