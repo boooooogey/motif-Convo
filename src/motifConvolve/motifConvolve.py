@@ -123,7 +123,7 @@ def tfextract(genome: str = typer.Option(..., help="fasta file for the genome"),
                     #tmp = torch.from_numpy(normalize_mat(np.exp(tmp), normalization_params))
                     tmp = normalize_mat(np.exp(tmp), normalization_params)
             tmp = tmp.numpy()
-        out[i1:i2, :bin*motif.nmotifs] = tmp.reshape(tmp.shape[0], tmp.shape[1])
+        out[i1:i2, :bin*motif.nmotifs] = tmp.reshape(tmp.shape[0], tmp.shape[1]*tmp.shape[2)
     print(f"Writing the results to {out_file}")
     
     names = motif.names
