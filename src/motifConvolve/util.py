@@ -10,6 +10,7 @@ from scipy.optimize import curve_fit
 from scipy.interpolate import PchipInterpolator
 import regex as re
 
+
 def number_of_headers(filename):
     header=0
     with open(filename,"r") as file:      
@@ -56,7 +57,7 @@ def scoreDist(pwm, nucleotide_prob=None, gran=None, size=1000):
         gran = (np.max(pwm) - np.min(pwm))/(size - 1)
     pwm = np.round(pwm/gran)*gran
     pwm_max, pwm_min = pwm.max(axis=1), pwm.min(axis=1)
-    distribution = init_dist(pwm_min[0], pwm_max[0], gran, pwm[0], nucleotide_prob[0])
+    distribution = init_dist(pwm_min[0], pwm_max[0], gran, pwm[0], nucleotide_prob[0])   
     for i in range(1, pwm.shape[0]):
         kernel = init_dist(pwm_min[i], pwm_max[i], gran, pwm[i], nucleotide_prob[i])
         distribution = np.convolve(distribution, kernel)
@@ -65,46 +66,146 @@ def scoreDist(pwm, nucleotide_prob=None, gran=None, size=1000):
     support = support_min + (ii) * gran
     return support, distribution[ii]
 
-def return_coef_for_normalization(pwms, nucleotide_prob=None, gran=None, size=1000):
+
+def scoreDistDinuc(pssm, prob, gran=None, size=1000):
+    
+    nucleotides = ['A', 'C', 'G', 'T']
+    nms = [a + b for a in nucleotides for b in nucleotides]
+    pssm = pd.DataFrame(pssm)
+    pssm.columns = nms
+      
+    if prob is None:
+            prob = np.ones(4)/4
+    prob = dict(zip(['A', 'C', 'G', 'T'], prob))
+
+    if gran is None:
+        if size is None:
+            raise ValueError("provide either gran or size. Both missing.")
+        gran = (np.max(pssm) - np.min(pssm))/(size - 1)            
+    
+    pssm = np.round(pssm / gran)
+    pssm = pssm * gran
+    mnscore = np.min(pssm, axis=1).sum()
+    mxscore = np.max(pssm, axis=1).sum()
+    nscores = int(np.round((mxscore - mnscore) / gran)) + 1
+    
+    def s2ind(s):
+        return int((s / gran - mnscore / gran + 1).round())
+    
+    SD = np.zeros((4, nscores))
+    nucleotides = ['A', 'C', 'G', 'T']
+    SD = pd.DataFrame(SD, index=nucleotides)
+
+    pssm_ainds = [i for i, name in enumerate(pssm.columns) if name.endswith('A')]
+    pssm_cinds = [i for i, name in enumerate(pssm.columns) if name.endswith('C')]
+    pssm_ginds = [i for i, name in enumerate(pssm.columns) if name.endswith('G')]
+    pssm_tinds = [i for i, name in enumerate(pssm.columns) if name.endswith('T')]
+
+    ascores = pssm.iloc[0, pssm_ainds].values
+    cscores = pssm.iloc[0, pssm_cinds].values
+    gscores = pssm.iloc[0, pssm_ginds].values
+    tscores = pssm.iloc[0, pssm_tinds].values
+
+    
+    ascores_i = {name: s2ind(score) for name, score in zip(pssm.columns[pssm_ainds], ascores)}
+    cscores_i = {name: s2ind(score) for name, score in zip(pssm.columns[pssm_cinds], cscores)}
+    gscores_i = {name: s2ind(score) for name, score in zip(pssm.columns[pssm_ginds], gscores)}
+    tscores_i = {name: s2ind(score) for name, score in zip(pssm.columns[pssm_tinds], tscores)}
+
+    # Probabilities of initial dinucleotides
+    def ffu(nms):
+        return [np.prod([prob[x] for x in nm]) for nm in nms]
+        
+    aprobs = ffu(ascores_i.keys())
+    cprobs = ffu(cscores_i.keys())
+    gprobs = ffu(gscores_i.keys())
+    tprobs = ffu(tscores_i.keys())
+    
+    for i in range(4):
+        SD.loc['A', ascores_i[list(ascores_i.keys())[i]]] += aprobs[i]
+        SD.loc['C', cscores_i[list(cscores_i.keys())[i]]] += cprobs[i]
+        SD.loc['G', gscores_i[list(gscores_i.keys())[i]]] += gprobs[i]
+        SD.loc['T', tscores_i[list(tscores_i.keys())[i]]] += tprobs[i]
+
+    def update_dist(nuc, pssm_inds, pos):
+        vals = pssm.iloc[pos,pssm_inds]
+        shifts = (vals/gran).round().astype(int) # shouldn't we use s2ind function here too?
+        tvec = np.zeros(SD.shape[1])
+        for i in range(4):
+            tvec += np.roll(SD.iloc[i, :], shifts[i]) * prob[nuc]
+        return(tvec)
+
+    for pos in range(1, pssm.shape[0]):
+        t1 = update_dist('A', pssm_ainds, pos)
+        t2 = update_dist('C', pssm_cinds, pos)
+        t3 = update_dist('G', pssm_ginds, pos)
+        t4 = update_dist('T', pssm_tinds, pos)
+        SD.iloc[0,:] = t1
+        SD.iloc[1,:] = t2
+        SD.iloc[2,:] = t3
+        SD.iloc[3,:] = t4
+
+    #print(mxscore)
+    #print(mxscore+gran)
+    x = np.arange(mnscore,mxscore,gran)
+    y = np.sum(SD, axis=0)
+    if len(x)==len(y):
+        #Tprint("lengths are equal")
+        #print(x[len(x)-3:len(x)])
+        return(tuple((x,y)))
+    if len(x)<len(y):
+        #print("lenagth are NOT equal")
+        x = np.arange(mnscore,mxscore+gran-1e-5,gran)
+        y = np.sum(SD, axis=0)
+        #print(x[len(x)-3:len(x)])
+        return(tuple((x,y)))
+
+
+
+def return_coef_for_normalization(pwms, nucleotide_prob=None, gran=None, size=1000, nuc="mono"):
     params = []
     for i in range(0,pwms.shape[0],2):
-        pwm = pwms[i].numpy().T
+        pwm = pwms[i].numpy().T      
         pwm = pwm[pwm.sum(axis=1) != 0, :]
         #prob = np.exp(pwm).sum(axis=0)/np.exp(pwm).sum()
         prob = np.exp(pwm)
-        s, d = scoreDist(pwm, prob, gran, size)
-        param, _ = curve_fit(logit, np.exp(s), np.cumsum(d), maxfev=5000)
+        if nuc=="mono":
+            s, d = scoreDist(pwm, prob, gran, size)
+        if nuc=="di":
+            s, d = scoreDistDinuc(pwm, prob=None, gran=gran, size=size)
+        param, _ = curve_fit(logit, s, np.cumsum(d), maxfev=5000)
         #f = interp1d(np.exp(s), np.cumsum(d))
         #print(curve_fit(logit, np.exp(s), np.cumsum(d), maxfev=5000))
         #params.append(param)
         params.append(param)
     return params
 
-def MCspline_fitting(pwms, nucleotide_prob=None, gran=None, size=1000):
+def MCspline_fitting(pwms, nucleotide_prob=None, gran=None, size=1000, nuc="mono"):
     spline_list = []
     for i in range(0,pwms.shape[0],2):
         pwm = pwms[i].numpy().T
-        pwm = pwm[pwm.sum(axis=1) != 0, :]
+        pwm[pwm.sum(axis=1) != 0, :]
         #prob = np.exp(pwm).sum(axis=0)/np.exp(pwm).sum()
         prob = np.exp(pwm)
-        s, d = scoreDist(pwm, prob, gran, size)
-        #print('x:', np.exp(s))
-        #print('y:', np.cumsum(d))
-        spl = PchipInterpolator(np.exp(s), np.cumsum(d))
+        if nuc=="mono":
+            s, d = scoreDist(pwm, prob, gran, size)
+        if nuc=="di":
+            s, d = scoreDistDinuc(pwm, prob=None, gran=gran, size=size)  
+        spl = PchipInterpolator(s, np.cumsum(d))
         spline_list.append(spl)
     return spline_list
 
-def return_coef_for_normalization_diff(pwms, nucleotide_prob=None, gran=None, size=1000, length_correction=1):
-    params = []
-    for i in range(0,pwms.shape[0],2):
-        pwm = pwms[i].numpy().T
-        pwm = pwm[pwm.sum(axis=1) != 0, :]
-        #prob = pwm.sum(axis=0)/pwm.sum()
-        prob = np.sum(np.exp(pwm) / np.exp(pwm).sum(axis=1).reshape(-1,1), axis=0)/np.sum(np.exp(pwm) / np.exp(pwm).sum(axis=1).reshape(-1,1))
-        s, d = scoreDist(pwm, prob, gran, size, diff=True)
-        param, _ = curve_fit(logit, s, np.power(np.cumsum(d), length_correction))
-        params.append(param)
-    return params
+#def return_coef_for_normalization_diff(pwms, nucleotide_prob=None, gran=None, size=1000, length_correction=1):
+#   params = []
+#    for i in range(0,pwms.shape[0],2):
+#        pwm = pwms[i].numpy().T
+#        pwm = pwm[pwm.sum(axis=1) != 0, :]
+#        #prob = pwm.sum(axis=0)/pwm.sum()
+#       prob = np.sum(np.exp(pwm) / np.exp(pwm).sum(axis=1).reshape(-1,1), axis=0)/np.sum(np.exp(pwm) / np.exp(pwm).sum(axis=1).reshape(-1,1))
+#       s, d = scoreDist(pwm, prob, gran, size)#, diff=True)
+#       param, _ = curve_fit(logit, s, np.power(np.cumsum(d), length_correction))
+#       params.append(param)
+#   return params
 
 def normalize_mat(mat, params):
     out = torch.empty_like(mat)
@@ -175,7 +276,7 @@ def returnmask(i, mask, windowsize, start, end, dinucleotide):
         tmp[int(windowsize-1):int(end-start-windowsize+1)] = 1
         mask[i,:,:] = torch.from_numpy(np.convolve(tmp, [1,1], mode="valid"))
     else:
-        mask[i, :, (windowsize-1):(end-start-windowsize+1)] = 1
+        mask[i, :, int(windowsize-1):int(end-start-windowsize+1)] = 1
 
 
 def returnonehot(string, dinucleotide=False):
@@ -213,13 +314,16 @@ def read_TFFM(file):
             data.append(discrete.text.split(","))
     return np.array(data, dtype=float)
 
-def read_dpwm(filename):
+def read_pwm(filename):
     with open(filename,'r') as file:
         lines = file.readlines()
     values = []
     for line in lines:
         if not line.startswith(">"):
             values.append(line.strip().split("\t"))
+    values = np.array(values, dtype=float)
+    if np.min(values)>=0:
+        values = values/values.sum(axis=1, keepdims=True)
     return np.array(values, dtype=float)
 
 def transform_kernel(kernel, smoothing, background):
@@ -232,7 +336,7 @@ def transform_kernel(kernel, smoothing, background):
     norm = out.min(axis=1).sum()
     return out, norm
 
-class MEME():
+class MEME_probNorm():
     def __init__(self, precision=1e-7, smoothing=0.02, background=None):
         self.version = 0
         self.alphabet = ""
@@ -248,31 +352,45 @@ class MEME():
         else:
             self.background = background
 
-    def parse(self, text): #, transform):
-        precision = self.precision
-        with open(text,'r') as file:
-            data = file.read()
-        self.version = re.compile(r'MEME version ([\d+\.*]+)').match(data).group(1)
-        self.names = re.findall(r"MOTIF (.*)\n", data)
-        self.background = re.findall(r"Background letter frequencies.*\n(A .* C .* G .* T .*)\n", data)[0]
-        self.strands = re.findall(r"strands: (.*)\n", data)[0].strip()
-        self.alphabet = re.findall(r"ALPHABET=(.*)\n", data)[0].strip()
-        letter_probs = re.findall(r"(letter-probability.*\n([ \t]*\d+\.?\d*[ \t]+\d+\.?\d*[ \t]+\d+\.?\d*[ \t]+\d+\.?\d*[ \t]*\n)+)", data)
-        assert len(letter_probs) == len(self.names)
-        self.nmotifs = len(letter_probs)
-        out_channels = self.nmotifs * 2
-        in_channels = 4
-        matrices = []
-        length = 0
-        for i in range(len(letter_probs)):
-            matrix = letter_probs[i][0].split("\n")
-            if len(matrix[-1]) == 0:
-                matrix = matrix[1:-1]
-            else:
-                matrix = matrix[1:]
-            matrices.append(np.array([i.split() for i in matrix], dtype=float))
-            if matrices[-1].shape[0] > length:
-                length = matrices[-1].shape[0]
+    def parse(self, text, nuc="mono"): #, transform):
+        if nuc == "mono":  
+            with open(text,'r') as file:
+                data = file.read()
+            self.version = re.compile(r'MEME version ([\d+\.*]+)').match(data).group(1)
+            self.names = re.findall(r"MOTIF (.*)\n", data)
+            self.background = re.findall(r"Background letter frequencies.*\n(A .* C .* G .* T .*)\n", data)[0]
+            self.strands = re.findall(r"strands: (.*)\n", data)[0].strip()
+            self.alphabet = re.findall(r"ALPHABET=(.*)\n", data)[0].strip()
+            letter_probs = re.findall(r"(letter-probability.*\n([ \t]*\d+\.?\d*[ \t]+\d+\.?\d*[ \t]+\d+\.?\d*[ \t]+\d+\.?\d*[ \t]*\n)+)", data)
+            assert len(letter_probs) == len(self.names)
+            self.nmotifs = len(letter_probs)
+            out_channels = self.nmotifs * 2
+            in_channels = 4
+            matrices = []
+            length = 0
+            for i in range(len(letter_probs)):
+                matrix = letter_probs[i][0].split("\n")
+                if len(matrix[-1]) == 0:
+                    matrix = matrix[1:-1]
+                else:
+                    matrix = matrix[1:]
+                matrices.append(np.array([i.split() for i in matrix], dtype=float))
+                if matrices[-1].shape[0] > length:
+                    length = matrices[-1].shape[0]
+        
+        if nuc == "di":
+            self.names = os.listdir(text)
+            self.nmotifs = len(self.names)
+            in_channels = 16
+            out_channels = self.nmotifs * 2
+            matrices = []
+            length = 0
+            for k,i in enumerate(self.names):
+                if i.endswith(".dpcm") or i.endswith(".dpwm"):
+                    matrix = read_pwm(os.path.join(text, i))
+                    matrices.append(matrix)
+                    if matrix.shape[0]>length:
+                        length = matrix.shape[0]              
         out = np.zeros((out_channels, in_channels, length), dtype=np.float32)
         mask = torch.zeros((out_channels, 1, length), dtype=torch.uint8)
         for k, kernel in enumerate(matrices):
@@ -284,15 +402,23 @@ class MEME():
             #   offset=np.min(kernel[kernel>0])
             #    bgMat=np.tile(bg,(kernel.shape[0],1))
             #    kernel=np.log((kernel+offset)/bgMat)
-            kernel[kernel == 0] = self.precision
-            kernel = np.log(kernel)
+            if np.min(kernel)<0:
+                #print( "it's already the log likelihood, no need to do the log transform")
+                kernel = kernel 
+            else:
+                kernel[kernel == 0] = self.precision
+                kernel = np.log(kernel)
+
             out[2*k  , :, :kernel.shape[0]] = kernel.T
             out[2*k+1, :, :kernel.shape[0]] = kernel[::-1, ::-1].T
             mask[2*k  , :, :kernel.shape[0]] = 1
             mask[2*k+1, :, :kernel.shape[0]] = 1
         return torch.from_numpy(out), mask
+    
+    def names(self):
+        return self.names
 
-class MEME_with_Transformation():
+class MEME_FABIAN():
     def __init__(self, precision=1e-7, smoothing=0.02, background=None):
         self.version = 0
         self.alphabet = ""
@@ -303,41 +429,60 @@ class MEME_with_Transformation():
         self.nmotifs = 0
         self.precision=1e-7
         self.smoothing = smoothing
-        if background is None:
-            self.background_prob = np.ones(4)*0.25
-        else:
-            self.background_prob = background
+        self.background_prob = background
             
-    def parse(self, text):
-        precision = self.precision
-        with open(text,'r') as file:
-            data = file.read()
-        self.version = re.compile(r'MEME version ([\d+\.*]+)').match(data).group(1)
-        self.names = re.findall(r"MOTIF (.*)\n", data)
-        self.background = re.findall(r"Background letter frequencies.*\n(A .* C .* G .* T .*)\n", data)[0]
-        self.strands = re.findall(r"strands: (.*)\n", data)[0].strip()
-        self.alphabet = re.findall(r"ALPHABET=(.*)\n", data)[0].strip()
-        letter_probs = re.findall(r"(letter-probability.*\n([ \t]*\d+\.?\d*[ \t]+\d+\.?\d*[ \t]+\d+\.?\d*[ \t]+\d+\.?\d*[ \t]*\n)+)", data)
-        assert len(letter_probs) == len(self.names)
-        self.nmotifs = len(letter_probs)
-        out_channels = self.nmotifs * 2
-        in_channels = 4
-        matrices = []
-        length = 0
-        for i in range(len(letter_probs)):
-            matrix = letter_probs[i][0].split("\n")
-            if len(matrix[-1]) == 0:
-                matrix = matrix[1:-1]
+    def parse(self, text, nuc="mono"):
+        if nuc == "mono":
+            if self.background_prob is None:
+                background_prob = np.ones(4)/4
             else:
-                matrix = matrix[1:]
-            matrices.append(np.array([i.split() for i in matrix], dtype=float))
-            if matrices[-1].shape[0] > length:
-                length = matrices[-1].shape[0]
+                background_prob = self.background_prob   
+            with open(text,'r') as file:
+                data = file.read()
+            self.version = re.compile(r'MEME version ([\d+\.*]+)').match(data).group(1)
+            self.names = re.findall(r"MOTIF (.*)\n", data)
+            self.background = re.findall(r"Background letter frequencies.*\n(A .* C .* G .* T .*)\n", data)[0]
+            self.strands = re.findall(r"strands: (.*)\n", data)[0].strip()
+            self.alphabet = re.findall(r"ALPHABET=(.*)\n", data)[0].strip()
+            letter_probs = re.findall(r"(letter-probability.*\n([ \t]*\d+\.?\d*[ \t]+\d+\.?\d*[ \t]+\d+\.?\d*[ \t]+\d+\.?\d*[ \t]*\n)+)", data)
+            assert len(letter_probs) == len(self.names)
+            self.nmotifs = len(letter_probs)
+            out_channels = self.nmotifs * 2
+            in_channels = 4
+            matrices = []
+            length = 0
+            for i in range(len(letter_probs)):
+                matrix = letter_probs[i][0].split("\n")
+                if len(matrix[-1]) == 0:
+                    matrix = matrix[1:-1]
+                else:
+                    matrix = matrix[1:]
+                matrices.append(np.array([i.split() for i in matrix], dtype=float))
+                if matrices[-1].shape[0] > length:
+                    length = matrices[-1].shape[0]
+        
+        if nuc == "di":
+            if self.background_prob is None:
+                background_prob = np.ones(16)/16
+            else:
+                background_prob = self.background_prob
+            self.names = os.listdir(text)
+            self.nmotifs = len(self.names)
+            in_channels = 16
+            out_channels = self.nmotifs * 2
+            matrices = []
+            length = 0
+            for i in self.names:
+                if i.endswith(".dpcm") or i.endswith(".dpwm"):
+                    matrix = read_pwm(os.path.join(text, i))
+                    matrices.append(matrix)
+                    if matrix.shape[0]>length:
+                        length = matrix.shape[0]             
         out = np.zeros((out_channels, in_channels, length), dtype=np.float32)
         mask = torch.zeros((out_channels, 1, length), dtype=torch.uint8)
         motif_norms = np.zeros(self.nmotifs, dtype=np.float32)
         for k, kernel in enumerate(matrices):
-            kernel, motif_norms[k] = transform_kernel(kernel, self.smoothing, self.background_prob)
+            kernel, motif_norms[k] = transform_kernel(kernel, self.smoothing, background_prob)
             out[2*k  , :, :kernel.shape[0]] = kernel.T
             out[2*k+1, :, :kernel.shape[0]] = kernel[::-1, ::-1].T
             mask[2*k  , :, :kernel.shape[0]] = 1
@@ -387,8 +532,8 @@ class TFFM_with_Transformation():
         data = []
         height = 0
         for i in self.names:
-            if i.endswith(".dpwm"):
-                tffm = read_dpwm(os.path.join(directory, i))
+            if i.endswith(".dpcm") or i.endswith(".dpwm"):
+                tffm = read_pwm(os.path.join(directory, i))
                 data.append(tffm)
                 if tffm.shape[0]>height:
                     height = tffm.shape[0]               
@@ -482,7 +627,7 @@ class vcfData:
                 assert(seg[self.windowsize-1:-(self.windowsize-1)]==r)
                 batch[i, :, :int(refe-refs-offset)] = returnonehot(seg, self.dinucleotide)
                 returnmask(i, mask, self.windowsize, refs, refe, self.dinucleotide)
-                #print(f"{seg[:self.windowsize-1]} + {a} + {seg[-(self.windowsize-1):]}")
+                #print(f"{seg[:self.windowsize-1]} + {a} + {seg[-(self.windowsize-1):]}, {self.dinucleotide}")
                 altbatch[i, :, :int(alte-alts-offset)] = returnonehot(seg[:self.windowsize-1] + a + seg[-(self.windowsize-1):], self.dinucleotide)
                 returnmask(i, altmask, self.windowsize, alts, alte, self.dinucleotide)
         return torch.from_numpy(batch), mask, torch.from_numpy(altbatch), altmask #torch.from_numpy(batch)
@@ -564,7 +709,7 @@ class SegmentData:
         #self.out.close()
 
 if __name__ == "__main__":
-    motif = MEME()
+    motif = MEME_FABIAN()
     kernels = motif.parse("TestInput/Test.meme", "none")
     segments = vcfData("TestInput/TestHg38.vcf", 128, "/data/genomes/human/Homo_sapiens/UCSC/hg38/Sequence/WholeGenomeFasta/genome.fa", kernels.shape[2])
     print(segments.headers)
