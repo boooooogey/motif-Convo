@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 from torch.nn import functional as F
 import pandas as pd
-from utilNEW import vcfData, MEME, MEME_with_Transformation, TFFM, TFFM_with_Transformation, SegmentData, kmers, return_coef_for_normalization, MCspline_fitting, return_coef_for_normalization_diff, normalize_mat, mc_spline, kmers #
+from utilNEW import vcfData, MEME_probNorm, MEME_FABIAN, TFFM, TFFM_with_Transformation, SegmentData, kmers, return_coef_for_normalization, MCspline_fitting, normalize_mat, mc_spline, kmers #
 import torch
 import numpy as np
 from enum import Enum
@@ -84,7 +84,7 @@ def tfextract(genome: str = typer.Option(..., help="fasta file for the genome"),
 
     print(f"Reading motifs from {motif_file}")
     if kernel == "PWM":
-        motif = MEME()
+        motif = MEME_probNorm()
         kernels, _ = motif.parse(motif_file) #, transform)
         if normalize == "logit":
             normalization_params = return_coef_for_normalization(kernels)
@@ -116,9 +116,9 @@ def tfextract(genome: str = typer.Option(..., help="fasta file for the genome"),
             if kernel == "PWM":
                 tmp = tmp.view(tmp.shape[0], tmp.shape[1]//2, tmp.shape[2]*2)
                 if normalize == "logit":
-                    tmp = normalize_mat(np.exp(tmp), normalization_params)
+                    tmp = normalize_mat(tmp, normalization_params)
                 if normalize == "spline":    
-                    tmp = mc_spline(np.exp(tmp), spline_list)
+                    tmp = mc_spline(tmp, spline_list)
             tmp = np.nan_to_num(tmp, nan=0)
             tmp = F.avg_pool1d(torch.tensor(tmp), int(tmp.shape[2]/bin)).numpy()
         if mode == "max":
@@ -128,9 +128,9 @@ def tfextract(genome: str = typer.Option(..., help="fasta file for the genome"),
             tmp = F.max_pool1d(torch.tensor(tmp), int(tmp.shape[2]/bin)).numpy()
             if kernel == "PWM":
                 if normalize == "logit":
-                    tmp = normalize_mat(np.exp(tmp), normalization_params)
+                    tmp = normalize_mat(tmp, normalization_params)
                 if normalize == "spline":
-                    tmp = mc_spline(np.exp(tmp), spline_list)
+                    tmp = mc_spline(tmp, spline_list)
             tmp = tmp.numpy()
         out[i1:i2, :bin*motif.nmotifs] = tmp.reshape(tmp.shape[0], tmp.shape[1]*tmp.shape[2])
     print(f"Writing the results to {out_file}")
@@ -144,25 +144,49 @@ def tfextract(genome: str = typer.Option(..., help="fasta file for the genome"),
 
     write_output_motif_features(out_file, out, new_names, segments.names())
 
+
+class score_type(str, Enum):
+    FABIAN = "FABIAN"
+    probNorm = "probNorm"
+    NONE = "NONE"
+    
+class nucleotide_type(str, Enum):
+    mono = "mono"
+    di = "di"
+
 @app.command()
 def variantdiff(genome: str = typer.Option(..., help="fasta file for the genome"),
                  motif_file: str = typer.Option(..., "--motif", help="meme file for the motifs"),
                  vcf: str = typer.Option(..., help="vcf file"), 
+                 diff_score: score_type = typer.Option(score_type.FABIAN, "--score", help="how to calculate the diff score (FABIAN/probNorm/NONE)"),
+                 nucleotide: nucleotide_type = typer.Option(nucleotide_type.mono, "--nuc", help="length of the nucleotides in the motifs (mono/di)"),
+                 normalize: normalize_type = typer.Option(normalize_type.logit, help="what normalization function to use (spline/logit)"),
+                 mode: mode_type = typer.Option(mode_type.max, help="Operation mode for the pooling layer (max/average)"),                 
                  batch: int = typer.Option(128, help="batch size"),
                  out_file: str = typer.Option(..., "--out", help="output directory"),
-                 window:int = typer.Option(0, help="batch size"), # change this in a way that if it gets a value use that value and if not the default will be kernel size (instead of setting 0 as the default, make it none or not receiving an input as the default)
+                 window:int = typer.Option(0, help="window size"), # change this in a way that if it gets a value use that value and if not the default will be kernel size (instead of setting 0 as the default, make it none or not receiving an input as the default)
                  kernel: kernel_type = typer.Option(kernel_type.PWM, help="Choose between PWM (4 dimensional) or TFFM (16 dimensional) (default = PWM).")
                 ):
 
     kernel = kernel.value
     if kernel == "PWM":
-        motif = MEME_with_Transformation()
-        print(f"Reading the motifs from {motif_file}")
-        kernels, kernel_mask, kernel_norms = motif.parse(motif_file)#, args.transform)
+        if diff_score == "FABIAN":
+            motif = MEME_FABIAN()
+            print(f"Reading the motifs from {motif_file}")
+            kernels, kernel_mask, kernel_norms = motif.parse(motif_file, nuc=nucleotide)#, args.transform)
+        else:
+            motif = MEME_probNorm()
+            kernels, kernel_mask = motif.parse(motif_file, nuc=nucleotide) #, transform)
+            if normalize == "logit":
+                normalization_params = return_coef_for_normalization(kernels, nuc=nucleotide)
+            if normalize == "spline":
+                spline_list = MCspline_fitting(kernels, nuc=nucleotide)
+        
         if window==0:
             windowsize = kernels.shape[2]
         else:
             windowsize=window
+
 
     elif kernel == "TFFM":
        motif = TFFM_with_Transformation()
@@ -175,7 +199,7 @@ def variantdiff(genome: str = typer.Option(..., help="fasta file for the genome"
     
     print("windowsize is:", windowsize)
     
-    segments = vcfData(vcf, batch, genome, windowsize, dinucleotide=(kernel=="TFFM"))
+    segments = vcfData(vcf, batch, genome, windowsize, dinucleotide=(nucleotide=="di"))
     
     outRef = np.empty((segments.n, motif.nmotifs), dtype=np.float32)
     outAlt = np.empty((segments.n, motif.nmotifs), dtype=np.float32)
@@ -189,38 +213,90 @@ def variantdiff(genome: str = typer.Option(..., help="fasta file for the genome"
         matref, maskref, matalt, maskalt = segments[i]
         
         ref = F.conv1d(matref, kernels)
+        alt = F.conv1d(matalt, kernels)
+        
         if window==0:
             motif_mask = F.conv1d(maskref, kernel_mask)
             ref[motif_mask == 0] = -torch.inf
-        ref = F.max_pool1d(ref, ref.shape[2]).numpy()
-        ref = np.max(ref.reshape(ref.shape[0],-1,2), axis=2) # separates the convolutions from the original kernel and the reverse kernel into two differetn columns AND then keeps the maximum between those two
-        outRef[i1:i2, :motif.nmotifs] = ref 
-
-        alt = F.conv1d(matalt, kernels)
-        if window==0:
             motif_mask = F.conv1d(maskalt, kernel_mask)        
             alt[motif_mask == 0] = -torch.inf
-        alt = F.max_pool1d(alt, alt.shape[2]).numpy()
-        alt = np.max(alt.reshape(alt.shape[0],-1,2), axis=2)
+        
+        if diff_score == "NONE":
+            if kernel == "PWM":
+                ref = ref.view(ref.shape[0], ref.shape[1]//2, ref.shape[2]*2)
+                alt = alt.view(alt.shape[0], alt.shape[1]//2, alt.shape[2]*2)
+            ref = F.max_pool1d(ref, ref.shape[2])
+            alt = F.max_pool1d(alt, alt.shape[2])
+            ref = np.squeeze(ref).numpy()
+            alt = np.squeeze(alt).numpy()
+            
+        if diff_score == "probNorm":
+            if mode == "average":
+                if kernel == "PWM":
+                    ref = ref.view(ref.shape[0], ref.shape[1]//2, ref.shape[2]*2)
+                    alt = alt.view(alt.shape[0], alt.shape[1]//2, alt.shape[2]*2)                    
+                    if normalize == "logit":
+                        ref = normalize_mat(ref, normalization_params)
+                        alt = normalize_mat(alt, normalization_params)
+                    if normalize == "spline":
+                        ref = mc_spline(ref, spline_list)
+                        alt = mc_spline(alt, spline_list)                 
+                ref = np.nan_to_num(ref, nan=0)
+                alt = np.nan_to_num(alt, nan=0)               
+                ref = F.avg_pool1d(torch.tensor(ref), ref.shape[2])
+                alt = F.avg_pool1d(torch.tensor(alt), alt.shape[2])        
+                ref = np.squeeze(ref).numpy()
+                alt = np.squeeze(alt).numpy()
+
+            if mode == "max":
+                if kernel == "PWM":
+                    ref = ref.view(ref.shape[0], ref.shape[1]//2, ref.shape[2]*2)
+                    alt = alt.view(alt.shape[0], alt.shape[1]//2, alt.shape[2]*2)
+                ref = np.nan_to_num(ref, nan=0)
+                alt = np.nan_to_num(alt, nan=0)
+                ref = F.max_pool1d(torch.tensor(ref), ref.shape[2])
+                alt = F.max_pool1d(torch.tensor(alt), alt.shape[2])
+                if kernel == "PWM":
+                    if normalize == "logit":
+                        ref = normalize_mat(ref, normalization_params)
+                        alt = normalize_mat(alt, normalization_params)
+                    if normalize == "spline":
+                        ref = mc_spline(ref, spline_list)
+                        alt = mc_spline(alt, spline_list)
+                ref = np.squeeze(ref).numpy()
+                alt = np.squeeze(alt).numpy()
+        
+        if diff_score == "FABIAN":                 
+            ref = F.max_pool1d(ref, ref.shape[2]).numpy()
+            alt = F.max_pool1d(alt, alt.shape[2]).numpy()
+            ref = np.max(ref.reshape(ref.shape[0],-1,2), axis=2) # separates the convolutions from the original kernel and the reverse complement kernel into two differetn columns AND then keeps the maximum between those two
+            alt = np.max(alt.reshape(alt.shape[0],-1,2), axis=2)
+        
+        outRef[i1:i2, :motif.nmotifs] = ref 
         outAlt[i1:i2, :motif.nmotifs] = alt
 
-    outRef = 1 - outRef/kernel_norms[np.newaxis,:]
-    outAlt = 1 - outAlt/kernel_norms[np.newaxis,:]
-    
-    
-
-    print("calculating ref...")
-    mask = outRef > outAlt
-    f = np.empty_like(outRef)
-    f[np.where(mask)] = -(1-outAlt[mask]+alpha)/(1-outRef[mask]+alpha)+1
-    print("calculating alt...")
-    mask = outAlt >= outRef
-    f[np.where(mask)] = (1-outRef[mask]+alpha)/(1-outAlt[mask]+alpha)-1
     print("calculating diff...")
-    outDiff = 2/(1+np.power(2, -2*f)) - 1
+    if diff_score == "FABIAN":
+        outRef = 1 - outRef/kernel_norms[np.newaxis,:]
+        outAlt = 1 - outAlt/kernel_norms[np.newaxis,:]
+        mask = outRef > outAlt
+        f = np.empty_like(outRef)
+        f[np.where(mask)] = -(1-outAlt[mask]+alpha)/(1-outRef[mask]+alpha)+1
+        mask = outAlt >= outRef
+        f[np.where(mask)] = (1-outRef[mask]+alpha)/(1-outAlt[mask]+alpha)-1
+        outDiff = 2/(1+np.power(2, -2*f)) - 1
+        
+    
+    if diff_score == "probNorm" or diff_score == "NONE":
+        #outAlt[outAlt == 0] = 1e-7
+        #outDiff = outRef/outAlt
+        outDiff = outAlt-outRef
     
     
-    print(f"Writing the results to {out_file}, alt and diff")
+    #print(outDiff[:,0])
+    #print(motif.names[0])
+    
+    print(f"Writing the results to {out_file}")
     #motif_names = []
     motif_names = motif.names
 
