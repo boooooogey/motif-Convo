@@ -161,6 +161,7 @@ class nucleotide_type(str, Enum):
 @app.command()
 def variantdiff(genome: str = typer.Option(..., help="fasta file for the genome"),
                  motif_file: str = typer.Option(..., "--motif", help="meme file for the motifs"),
+                 max_transform: bool = typer.Option(False, "--transform", help="Apply max transformation or not"),
                  vcf: str = typer.Option(..., help="vcf file"), 
                  diff_score: score_type = typer.Option(score_type.FABIAN, "--score", help="how to calculate the diff score (FABIAN/probNorm/NONE)"),
                  nucleotide: nucleotide_type = typer.Option(nucleotide_type.mono, "--nuc", help="length of the nucleotides in the motifs (mono/di)"),
@@ -180,7 +181,7 @@ def variantdiff(genome: str = typer.Option(..., help="fasta file for the genome"
             kernels, kernel_mask, kernel_norms = motif.parse(motif_file, nuc=nucleotide)#, args.transform)
         else:
             motif = MEME_probNorm()
-            kernels, kernel_mask = motif.parse(motif_file, nuc=nucleotide) #, transform)
+            kernels, kernel_mask = motif.parse(motif_file, nuc=nucleotide, transform=max_transform)
             if normalize == "logit":
                 normalization_params = return_coef_for_normalization(kernels, nuc=nucleotide)
             if normalize == "spline":
