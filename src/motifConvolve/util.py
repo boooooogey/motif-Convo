@@ -183,8 +183,8 @@ def return_coef_for_normalization(pwms, nucleotide_prob=None, gran=None, size=10
 def MCspline_fitting(pwms, nucleotide_prob=None, gran=None, size=1000, nuc="mono"):
     spline_list = []
     for i in range(0,pwms.shape[0],2):
-        pwm = pwms[i].numpy().T
-        pwm[pwm.sum(axis=1) != 0, :]
+        pwm = pwms[i].numpy().T      
+        pwm = pwm[pwm.sum(axis=1) != 0, :]
         #prob = np.exp(pwm).sum(axis=0)/np.exp(pwm).sum()
         prob = np.exp(pwm)
         if nuc=="mono":
@@ -327,7 +327,7 @@ def read_pwm(filename):
     return np.array(values, dtype=float)
 
 def transform_kernel(kernel, smoothing, background):
-    if np.min(kernel)<0:
+    if np.min(kernel)<0: #(if kernels are already log transformed)
         out=kernel
     else: 
         out = np.log(kernel / background + smoothing)
@@ -347,13 +347,14 @@ class MEME_probNorm():
         self.nmotifs = 0
         self.precision=1e-7
         self.smoothing = smoothing
-        if background is None:
-            self.background = np.ones(4)*0.25
-        else:
-            self.background = background
+        self.background_prob = background
 
     def parse(self, text, nuc="mono"): #, transform):
         if nuc == "mono":  
+            if self.background_prob is None:
+                background_prob = np.ones(4)/4
+            else:
+                background_prob = self.background
             with open(text,'r') as file:
                 data = file.read()
             self.version = re.compile(r'MEME version ([\d+\.*]+)').match(data).group(1)
@@ -379,6 +380,10 @@ class MEME_probNorm():
                     length = matrices[-1].shape[0]
         
         if nuc == "di":
+            if self.background_prob is None:
+                background_prob = np.ones(16)/16
+            else:
+                background_prob = self.background_prob
             self.names = os.listdir(text)
             self.nmotifs = len(self.names)
             in_channels = 16
@@ -402,13 +407,15 @@ class MEME_probNorm():
             #   offset=np.min(kernel[kernel>0])
             #    bgMat=np.tile(bg,(kernel.shape[0],1))
             #    kernel=np.log((kernel+offset)/bgMat)
-            if np.min(kernel)<0:
-                #print( "it's already the log likelihood, no need to do the log transform")
-                kernel = kernel 
-            else:
-                kernel[kernel == 0] = self.precision
-                kernel = np.log(kernel)
-
+            
+            #if np.min(kernel)<0:
+            #    #print( "it's already the log likelihood, no need to do the log transform")
+            #    kernel = kernel 
+            #else:
+            #    kernel[kernel == 0] = self.precision
+            #    kernel = np.log(kernel)
+            kernel, _ = transform_kernel(kernel, self.smoothing, background_prob)
+            
             out[2*k  , :, :kernel.shape[0]] = kernel.T
             out[2*k+1, :, :kernel.shape[0]] = kernel[::-1, ::-1].T
             mask[2*k  , :, :kernel.shape[0]] = 1
