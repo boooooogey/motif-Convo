@@ -108,10 +108,12 @@ def tfextract(genome: str = typer.Option(..., help="fasta file for the genome"),
         i1, i2 = i*batch, (i+1)*batch
         if i2 >= segments.n: i2 = segments.n
         mat, out[i1:i2, bin*motif.nmotifs:] = segments[i]
+        
         if device_name != "cpu":
             tmp = F.conv1d(mat.to(device), kernels.to(device)).cpu()
         else:
             tmp = F.conv1d(mat, kernels)
+        
         if mode == "average":
             if kernel == "PWM":
                 tmp = tmp.view(tmp.shape[0], tmp.shape[1]//2, tmp.shape[2]*2)
@@ -121,6 +123,7 @@ def tfextract(genome: str = typer.Option(..., help="fasta file for the genome"),
                     tmp = mc_spline(tmp, spline_list)
             tmp = np.nan_to_num(tmp, nan=0)
             tmp = F.avg_pool1d(torch.tensor(tmp), int(tmp.shape[2]/bin)).numpy()
+        
         if mode == "max":
             if kernel == "PWM":
                 tmp = tmp.view(tmp.shape[0], tmp.shape[1]//2, tmp.shape[2]*2)
@@ -132,6 +135,7 @@ def tfextract(genome: str = typer.Option(..., help="fasta file for the genome"),
                 if normalize == "spline":
                     tmp = mc_spline(tmp, spline_list)
             tmp = tmp.numpy()
+        
         out[i1:i2, :bin*motif.nmotifs] = tmp.reshape(tmp.shape[0], tmp.shape[1]*tmp.shape[2])
     print(f"Writing the results to {out_file}")
     
@@ -247,7 +251,7 @@ def variantdiff(genome: str = typer.Option(..., help="fasta file for the genome"
                 alt = F.avg_pool1d(torch.tensor(alt), alt.shape[2])        
                 ref = np.squeeze(ref).numpy()
                 alt = np.squeeze(alt).numpy()
-
+                
             if mode == "max":
                 if kernel == "PWM":
                     ref = ref.view(ref.shape[0], ref.shape[1]//2, ref.shape[2]*2)
@@ -292,14 +296,13 @@ def variantdiff(genome: str = typer.Option(..., help="fasta file for the genome"
         #outDiff = outRef/outAlt
         outDiff = outAlt-outRef
     
-    
     #print(outDiff[:,0])
     #print(motif.names[0])
     
     print(f"Writing the results to {out_file}")
     #motif_names = []
     motif_names = motif.names
-
+    
     write_output_diff(out_file+".alt", outAlt, motif_names, segments.names())
     write_output_diff(out_file+".ref", outRef, motif_names, segments.names())
     write_output_diff(out_file+".diff", outDiff, motif_names, segments.names())
