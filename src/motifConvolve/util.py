@@ -90,7 +90,7 @@ def scoreDistDinuc(pssm, prob, gran=None, size=1000):
     nscores = int(np.round((mxscore - mnscore) / gran)) + 1
     
     def s2ind(s):
-        return int((s / gran - mnscore / gran + 1).round())
+        return int((s / gran - mnscore / gran).round())
     
     SD = np.zeros((4, nscores))
     nucleotides = ['A', 'C', 'G', 'T']
@@ -349,7 +349,7 @@ class MEME_probNorm():
         self.smoothing = smoothing
         self.background_prob = background
 
-    def parse(self, text, nuc="mono"): #, transform):
+    def parse(self, text, nuc="mono", transform=False):
         if nuc == "mono":  
             if self.background_prob is None:
                 background_prob = np.ones(4)/4
@@ -408,13 +408,16 @@ class MEME_probNorm():
             #    bgMat=np.tile(bg,(kernel.shape[0],1))
             #    kernel=np.log((kernel+offset)/bgMat)
             
-            #if np.min(kernel)<0:
-            #    #print( "it's already the log likelihood, no need to do the log transform")
-            #    kernel = kernel 
-            #else:
-            #    kernel[kernel == 0] = self.precision
-            #    kernel = np.log(kernel)
-            kernel, _ = transform_kernel(kernel, self.smoothing, background_prob)
+            if transform:
+                kernel, _ = transform_kernel(kernel, self.smoothing, background_prob)
+            else:    
+                if np.min(kernel)<0:
+                    #print( "it's already the log likelihood, no need to do the log transform")
+                    kernel = kernel 
+                else:
+                    kernel[kernel == 0] = self.precision
+                    kernel = np.log(kernel)
+            
             
             out[2*k  , :, :kernel.shape[0]] = kernel.T
             out[2*k+1, :, :kernel.shape[0]] = kernel[::-1, ::-1].T
