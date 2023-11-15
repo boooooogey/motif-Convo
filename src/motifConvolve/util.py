@@ -51,7 +51,6 @@ def init_dist(dmin, dmax, dp, weights, probs):
 def scoreDist(pwm, nucleotide_prob=None, gran=None, size=1000):
     if nucleotide_prob is None:
         nucleotide_prob = np.ones(4)/4
-    print(nucleotide_prob)
     if gran is None:
         if size is None:
             raise ValueError("provide either gran or size. Both missing.")
