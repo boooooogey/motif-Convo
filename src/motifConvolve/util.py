@@ -51,6 +51,7 @@ def init_dist(dmin, dmax, dp, weights, probs):
 def scoreDist(pwm, nucleotide_prob=None, gran=None, size=1000):
     if nucleotide_prob is None:
         nucleotide_prob = np.ones(4)/4
+    print(nucleotide_prob)
     if gran is None:
         if size is None:
             raise ValueError("provide either gran or size. Both missing.")
@@ -75,8 +76,7 @@ def scoreDistDinuc(pssm, prob, gran=None, size=1000):
     pssm.columns = nms
       
     if prob is None:
-            prob = np.ones(4)/4
-    prob = dict(zip(['A', 'C', 'G', 'T'], prob))
+        prob = dict(zip(['A', 'C', 'G', 'T'], np.ones(4)/4))
 
     if gran is None:
         if size is None:
@@ -167,8 +167,7 @@ def return_coef_for_normalization(pwms, nucleotide_prob=None, gran=None, size=10
     for i in range(0,pwms.shape[0],2):
         pwm = pwms[i].numpy().T      
         pwm = pwm[pwm.sum(axis=1) != 0, :]
-        #prob = np.exp(pwm).sum(axis=0)/np.exp(pwm).sum()
-        prob = np.exp(pwm)
+        prob = np.exp(pwm) / np.sum(np.exp(pwm), axis=1, keepdims=True)
         if nuc=="mono":
             s, d = scoreDist(pwm, prob, gran, size)
         if nuc=="di":
@@ -185,8 +184,7 @@ def MCspline_fitting(pwms, nucleotide_prob=None, gran=None, size=1000, nuc="mono
     for i in range(0,pwms.shape[0],2):
         pwm = pwms[i].numpy().T      
         pwm = pwm[pwm.sum(axis=1) != 0, :]
-        #prob = np.exp(pwm).sum(axis=0)/np.exp(pwm).sum()
-        prob = np.exp(pwm)
+        prob = np.exp(pwm) / np.sum(np.exp(pwm), axis=1, keepdims=True)
         if nuc=="mono":
             s, d = scoreDist(pwm, prob, gran, size)
         if nuc=="di":
@@ -355,47 +353,89 @@ class MEME_probNorm():
                 background_prob = np.ones(4)/4
             else:
                 background_prob = self.background
-            with open(text,'r') as file:
-                data = file.read()
-            self.version = re.compile(r'MEME version ([\d+\.*]+)').match(data).group(1)
-            self.names = re.findall(r"MOTIF (.*)\n", data)
-            self.background = re.findall(r"Background letter frequencies.*\n(A .* C .* G .* T .*)\n", data)[0]
-            self.strands = re.findall(r"strands: (.*)\n", data)[0].strip()
-            self.alphabet = re.findall(r"ALPHABET=(.*)\n", data)[0].strip()
-            letter_probs = re.findall(r"(letter-probability.*\n([ \t]*\d+\.?\d*[ \t]+\d+\.?\d*[ \t]+\d+\.?\d*[ \t]+\d+\.?\d*[ \t]*\n)+)", data)
-            assert len(letter_probs) == len(self.names)
-            self.nmotifs = len(letter_probs)
-            out_channels = self.nmotifs * 2
-            in_channels = 4
-            matrices = []
-            length = 0
-            for i in range(len(letter_probs)):
-                matrix = letter_probs[i][0].split("\n")
-                if len(matrix[-1]) == 0:
-                    matrix = matrix[1:-1]
-                else:
-                    matrix = matrix[1:]
-                matrices.append(np.array([i.split() for i in matrix], dtype=float))
-                if matrices[-1].shape[0] > length:
-                    length = matrices[-1].shape[0]
-        
+            
+            if text.endswith(".meme"):
+                with open(text,'r') as file:
+                    data = file.read()
+                self.version = re.compile(r'MEME version ([\d+\.*]+)').match(data).group(1)
+                self.names = re.findall(r"MOTIF (.*)\n", data)
+                self.background = re.findall(r"Background letter frequencies.*\n(A .* C .* G .* T .*)\n", data)[0]
+                self.strands = re.findall(r"strands: (.*)\n", data)[0].strip()
+                self.alphabet = re.findall(r"ALPHABET=(.*)\n", data)[0].strip()
+                letter_probs = re.findall(r"(letter-probability.*\n([ \t]*\d+\.?\d*[ \t]+\d+\.?\d*[ \t]+\d+\.?\d*[ \t]+\d+\.?\d*[ \t]*\n)+)", data)
+                assert len(letter_probs) == len(self.names)
+                self.nmotifs = len(letter_probs)
+                out_channels = self.nmotifs * 2
+                in_channels = 4
+                matrices = []
+                length = 0
+                for i in range(len(letter_probs)):
+                    matrix = letter_probs[i][0].split("\n")
+                    if len(matrix[-1]) == 0:
+                        matrix = matrix[1:-1]
+                    else:
+                        matrix = matrix[1:]
+                    matrices.append(np.array([i.split() for i in matrix], dtype=float))
+                    if matrices[-1].shape[0] > length:
+                        length = matrices[-1].shape[0]
+            else:
+                self.names = os.listdir(text)
+                self.nmotifs = len(self.names)
+                in_channels = 4
+                out_channels = self.nmotifs * 2
+                matrices = []
+                length = 0
+                for k,i in enumerate(self.names):
+                    if i.endswith(".pcm") or i.endswith(".pwm"):
+                        matrix = read_pwm(os.path.join(text, i))
+                        matrices.append(matrix)
+                        if matrix.shape[0]>length:
+                            length = matrix.shape[0] 
+            
         if nuc == "di":
             if self.background_prob is None:
                 background_prob = np.ones(16)/16
             else:
                 background_prob = self.background_prob
-            self.names = os.listdir(text)
-            self.nmotifs = len(self.names)
-            in_channels = 16
-            out_channels = self.nmotifs * 2
-            matrices = []
-            length = 0
-            for k,i in enumerate(self.names):
-                if i.endswith(".dpcm") or i.endswith(".dpwm"):
-                    matrix = read_pwm(os.path.join(text, i))
-                    matrices.append(matrix)
-                    if matrix.shape[0]>length:
-                        length = matrix.shape[0]              
+            
+            if text.endswith(".meme"):
+                with open(text,'r') as file:
+                    data = file.read()
+                self.version = re.compile(r'MEME version ([\d+\.*]+)').match(data).group(1)
+                self.names = re.findall(r"MOTIF (.*)\n", data)
+                self.background = re.findall(r"Background letter frequencies.*\n(A .* C .* G .* T .*)\n", data)[0]
+                self.strands = re.findall(r"strands: (.*)\n", data)[0].strip()
+                self.alphabet = re.findall(r"ALPHABET=(.*)\n", data)[0].strip()
+                letter_probs = re.findall(r"(letter-probability.*\n([ \t]*\d+\.?\d*[ \t]+\d+\.?\d*[ \t]+\d+\.?\d*[ \t]+\d+\.?\d*[ \t]*\n)+)", data)
+                assert len(letter_probs) == len(self.names)
+                self.nmotifs = len(letter_probs)
+                out_channels = self.nmotifs * 2
+                in_channels = 16
+                matrices = []
+                length = 0
+                for i in range(len(letter_probs)):
+                    matrix = letter_probs[i][0].split("\n")
+                    if len(matrix[-1]) == 0:
+                        matrix = matrix[1:-1]
+                    else:
+                        matrix = matrix[1:]
+                    matrices.append(np.array([i.split() for i in matrix], dtype=float))
+                    if matrices[-1].shape[0] > length:
+                        length = matrices[-1].shape[0]
+            else:   
+                self.names = os.listdir(text)
+                self.nmotifs = len(self.names)
+                in_channels = 16
+                out_channels = self.nmotifs * 2
+                matrices = []
+                length = 0
+                for k,i in enumerate(self.names):
+                    if i.endswith(".dpcm") or i.endswith(".dpwm"):
+                        matrix = read_pwm(os.path.join(text, i))
+                        matrices.append(matrix)
+                        if matrix.shape[0]>length:
+                            length = matrix.shape[0]              
+        
         out = np.zeros((out_channels, in_channels, length), dtype=np.float32)
         mask = torch.zeros((out_channels, 1, length), dtype=torch.uint8)
         for k, kernel in enumerate(matrices):
