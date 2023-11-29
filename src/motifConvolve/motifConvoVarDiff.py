@@ -60,7 +60,6 @@ def variantdiff(genome: str = typer.Option(..., help="fasta file for the genome"
                 window:int = typer.Option(0, help="window size"), # change this in a way that if it gets a value use that value and if not the default will be kernel size (instead of setting 0 as the default, make it none or not receiving an input as the default)
                 kernel: kernel_type = typer.Option(kernel_type.PWM, help="Choose between PWM (4 dimensional) or TFFM (16 dimensional) (default = PWM).")
                 ):
-
     
     kernel = kernel.value
     if kernel == "PWM":
@@ -69,17 +68,19 @@ def variantdiff(genome: str = typer.Option(..., help="fasta file for the genome"
             print(f"Reading the motifs from {motif_file}")
             kernels, kernel_mask, kernel_norms = motif.parse(motif_file, nuc=nucleotide)
         else:
-            motif = MEME_probNorm()
-            kernels, kernel_mask = motif.parse(motif_file, nuc=nucleotide, transform=max_scale)
-            
-            if diff_score=="probNorm":
-                if normalization_file is None:
+            if normalization_file is None:
+                motif = MEME_probNorm()
+                kernels, kernel_mask = motif.parse(motif_file, nuc=nucleotide, transform=max_scale)
+                if diff_score=="probNorm":
                     print("normalization params not given. normalization process running...")
                     spline_list = MCspline_fitting(kernels, nuc=nucleotide)
-                else:
-                    assert (max_scale==True and "max_scaled" in normalization_file) or (max_scale==False and not "max_scaled" in normalization_file), "MaxScale option is not consistent with the normalization params file"
-                    with open(normalization_file, "rb") as fp:
-                        spline_list = pickle.load(fp)
+            else:
+                if "max_scaled" in normalization_file:
+                    max_scale=True
+                motif = MEME_probNorm()
+                kernels, kernel_mask = motif.parse(motif_file, nuc=nucleotide, transform=max_scale)
+                with open(normalization_file, "rb") as fp:
+                    spline_list = pickle.load(fp)
         
         if window==0:
             windowsize = kernels.shape[2]
@@ -149,7 +150,7 @@ def variantdiff(genome: str = typer.Option(..., help="fasta file for the genome"
                 alt = mc_spline(alt, spline_list)
             ref = np.squeeze(ref).numpy()
             alt = np.squeeze(alt).numpy()
-        
+            
         if diff_score == "FABIAN":                 
             ref = F.max_pool1d(ref, ref.shape[2]).numpy()
             alt = F.max_pool1d(alt, alt.shape[2]).numpy()
@@ -174,7 +175,7 @@ def variantdiff(genome: str = typer.Option(..., help="fasta file for the genome"
     if diff_score == "probNorm" or diff_score == "NONE":
         outDiff = outAlt-outRef
     
-    
+    #print(outDiff[:,0])
     print(f"Writing the results to {out_file}")
     
     motif_names = motif.names
