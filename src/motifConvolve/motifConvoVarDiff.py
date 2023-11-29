@@ -105,7 +105,7 @@ def variantdiff(genome: str = typer.Option(..., help="fasta file for the genome"
     alpha = 0.1
     print(f"Batch size: {batch}")
     print("Calculating convolutions")
-    for i in range(1):#len(segments)):
+    for i in range(len(segments)):
         print(f"Batch {i+1}:")
         i1, i2 = i*batch, (i+1)*batch
         if i2 >= segments.n: i2 = segments.n
