@@ -178,8 +178,6 @@ def variantdiff(genome: str = typer.Option(..., help="fasta file for the genome"
         outDiff = outAlt-outRef
     #print(outDiff[:,0])
     
-    print(f"Writing the results to {out_file}")
-    
     motif_names = motif.names
     
     if max_scale==True:
@@ -187,6 +185,7 @@ def variantdiff(genome: str = typer.Option(..., help="fasta file for the genome"
     else:
         scale = ""
     
+    print(f"Writing the results to {out_file}+_{scale}_{diff_score}_{mode}")
     write_output_diff(out_file+f"_{scale}_{diff_score}_{mode}.alt", outAlt, motif_names, segments.names())
     write_output_diff(out_file+f"_{scale}_{diff_score}_{mode}.ref", outRef, motif_names, segments.names())
     write_output_diff(out_file+f"_{scale}_{diff_score}_{mode}.diff", outDiff, motif_names, segments.names())
