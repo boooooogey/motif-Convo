@@ -50,7 +50,7 @@ def variantdiff(genome: str = typer.Option(..., help="fasta file for the genome"
                 motif_file: str = typer.Option(..., "--motif", help="meme file for the motifs"),
                 vcf: str = typer.Option(..., help="vcf file"), 
                 diff_score: score_type = typer.Option(score_type.NONE, "--method", help="how to calculate the diff score (FABIAN/probNorm/NONE)"),
-                max_scale: bool = typer.Option(False, "--MaxScale", help="Apply max transformation or not"),
+                max_scale: bool = typer.Option(True, "--MaxScale", help="Apply max transformation or not"),
                 nucleotide: nucleotide_type = typer.Option(nucleotide_type.mono, "--nuc", help="length of the nucleotides in the motifs (mono/di)"),
                 #normalize: bool = typer.Option(False, help="what normalization function to use (spline/logit)"),
                 normalization_file: str = typer.Option(None, "--norm", help="file including normalization params. should be consistent with the transform option"),
@@ -77,6 +77,8 @@ def variantdiff(genome: str = typer.Option(..., help="fasta file for the genome"
             else:
                 if "max_scaled" in normalization_file:
                     max_scale=True
+                else:
+                    max_scale=False
                 motif = MEME_probNorm()
                 kernels, kernel_mask = motif.parse(motif_file, nuc=nucleotide, transform=max_scale)
                 with open(normalization_file, "rb") as fp:
@@ -174,15 +176,20 @@ def variantdiff(genome: str = typer.Option(..., help="fasta file for the genome"
     
     if diff_score == "probNorm" or diff_score == "NONE":
         outDiff = outAlt-outRef
-    
     #print(outDiff[:,0])
+    
     print(f"Writing the results to {out_file}")
     
     motif_names = motif.names
-
-    write_output_diff(out_file+".alt", outAlt, motif_names, segments.names())
-    write_output_diff(out_file+".ref", outRef, motif_names, segments.names())
-    write_output_diff(out_file+".diff", outDiff, motif_names, segments.names())
+    
+    if max_scale==True:
+        scale = "MaxScaled"
+    else:
+        scale = ""
+    
+    write_output_diff(out_file+f"_{scale}_{diff_score}_{mode}.alt", outAlt, motif_names, segments.names())
+    write_output_diff(out_file+f"_{scale}_{diff_score}_{mode}.ref", outRef, motif_names, segments.names())
+    write_output_diff(out_file+f"_{scale}_{diff_score}_{mode}.diff", outDiff, motif_names, segments.names())
 
 if __name__ == "__main__":
     app()
